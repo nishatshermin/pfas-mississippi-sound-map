@@ -1,0 +1,4 @@
+# Generated single-file map: base64-embedded PNGs, ~8.5 MB.
+# Treat as binary so Git doesn't try to diff or merge it, and so GitHub's
+# language stats don't count it as hand-written HTML.
+index.html -diff -merge linguist-generated=true

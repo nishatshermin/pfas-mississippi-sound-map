@@ -1,0 +1,20 @@
+# Large source data and intermediates are not version-controlled.
+*.tif
+*.tiff
+*.npy
+*.zip
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.sbn
+*.sbx
+*.gif
+*.pptx
+*.docx
+*.pdf
+~$*
+.DS_Store
+Thumbs.db

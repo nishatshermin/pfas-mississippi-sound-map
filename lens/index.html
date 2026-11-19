@@ -112,6 +112,13 @@ require([
   const info = new OAuthInfo({ appId: APP_ID, portalUrl: PORTAL, popup: usePopup,
                                popupCallbackUrl: new URL("oauth-callback.html", location.href).href });
   esriId.registerOAuthInfos([info]);
+  // Remember the sign-in for this browser tab only (session storage: gone when the tab closes; the ArcGIS token
+  // itself expires after about 2 hours), so reloads do not ask again.
+  const STORE = "pfasLensIdentity";
+  try { const saved = sessionStorage.getItem(STORE); if (saved) esriId.initialize(JSON.parse(saved)); } catch (e) {}
+  esriId.on("credential-create", function () {
+    try { sessionStorage.setItem(STORE, JSON.stringify(esriId.toJSON())); } catch (e) {}
+  });
   const gate = document.getElementById("signin");
   // Not signed in yet: ArcGIS shows its own one-click sign-in prompt. If that is cancelled, a fallback panel
   // offers to try again or to open the page in its own tab.

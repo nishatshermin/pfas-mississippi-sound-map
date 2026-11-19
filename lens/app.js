@@ -112,6 +112,12 @@ require([
       // tools open on top of the bars instead of underneath them.
       const surface = view.container.querySelector(".esri-view-surface");
       if (surface) surface.appendChild(svg);
+      // A click on a bar, flag or dot must not also reach the map (an empty-map click clears the selection).
+      ["pointerdown", "pointerup", "click", "dblclick"].forEach(function (type) {
+        svg.addEventListener(type, function (e) {
+          if (e.target && e.target.closest && e.target.closest(".hit")) e.stopPropagation();
+        });
+      });
       // map tools: layer list (turn layers on and off), zoom, home, scale bar. The legend panel is always shown and
       // lists only the layers that are visible.
       const layerList = new LayerList({ view: view });

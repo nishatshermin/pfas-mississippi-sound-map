@@ -108,6 +108,10 @@ require([
     view = new MapView({ container: "view", map: map, constraints: { snapToZoom: false },
                          popupEnabled: true, ui: { components: ["attribution"] } });
     view.when(async function () {
+      // Draw the lens and coast bars inside the map surface, below the map's own UI layer, so pop-ups and the map
+      // tools open on top of the bars instead of underneath them.
+      const surface = view.container.querySelector(".esri-view-surface");
+      if (surface) surface.appendChild(svg);
       // map tools: layer list (turn layers on and off), zoom, home, scale bar. The legend panel is always shown and
       // lists only the layers that are visible.
       const layerList = new LayerList({ view: view });
@@ -447,7 +451,7 @@ require([
         selectSamples(gr.sids.slice(), "Showing the " + gr.n + (gr.n === 1 ? " river sample" : " river samples") +
           " of the bar at " + kmText + " and every stream upstream of them.");
       });
-      hover(path, "Coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin) + ": " + gr.n +
+      hover(path, gr.n +
         (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +
         "). Upstream streams " + Math.round(gr.stream).toLocaleString() + " km. " +
         (bar.has ? label + " average " + fmt(bar.avg) + " ng/L (" + gr.nv + " of " + gr.n + " samples with a measured value)"

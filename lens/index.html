@@ -152,7 +152,10 @@ require([
       new Legend({ view: view, container: "legend", respectLayerVisibility: true });
 
       // first open: only point layers are drawn (as the web map sets them); every line layer starts off
-      const plain = map.allLayers.filter(function (l) { return l.type !== "group"; });
+      // (operational layers only; the basemap's own layers are left alone)
+      const bm = map.basemap;
+      const inBasemap = function (l) { return bm && (bm.baseLayers.includes(l) || bm.referenceLayers.includes(l)); };
+      const plain = map.allLayers.filter(function (l) { return l.type !== "group" && !inBasemap(l); });
       await Promise.all(plain.map(function (l) { return l.load().catch(function () {}); }).toArray());
       plain.forEach(function (l) { if (!(l.type === "feature" && l.geometryType === "point")) l.visible = false; });
 

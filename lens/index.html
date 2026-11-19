@@ -70,7 +70,7 @@
   <p class="count" id="count">Loading samples…</p>
   <p>Click a river/stream sample to show every stream that could drain to it; click an empty spot to clear.</p>
   <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
-  <p>Coast bars: the river samples whose rivers reach the sea along each stretch of coast. Length = upstream stream length; color = average of the chosen PFAS measure. Zoom in for finer stretches.</p>
+  <p>Coast bars: the river samples whose rivers reach the sea along each stretch of coast. Length = upstream stream length; color = average of the chosen PFAS measure. Zoom in for finer stretches; click a bar to show its streams and samples.</p>
   <button id="lens-toggle" type="button" aria-pressed="false">Turn lens on</button>
   <div id="coast-controls">
     <button id="coast-toggle" type="button" aria-pressed="false">Show coast bars</button>
@@ -277,7 +277,7 @@ require([
             return { km: r.a.km, x: r.x, y: r.y, rx: xy[0], ry: xy[1] };
           }).sort(function (u, v) { return u.km - v.km; });
         } else {
-          mouthSamples = rows.map(function (r) { return { km: r.a.coast_km, mouth: r.a.mouth_id, stream: r.a.stream_km, a: r.a }; })
+          mouthSamples = rows.map(function (r) { return { km: r.a.coast_km, mouth: r.a.mouth_id, stream: r.a.stream_km, sid: r.a.sampleid, a: r.a }; })
             .sort(function (u, v) { return u.km - v.km; });
         }
       }
@@ -419,8 +419,8 @@ require([
     mouthSamples.forEach(function (s) {
       const i = Math.floor(s.km / bin);
       let g = groups.get(i);
-      if (!g) { g = { stream: 0, mouths: new Set(), n: 0, nv: 0, sum: 0 }; groups.set(i, g); }
-      g.stream += s.stream; g.mouths.add(s.mouth); g.n += 1;
+      if (!g) { g = { stream: 0, mouths: new Set(), n: 0, nv: 0, sum: 0, sids: [] }; groups.set(i, g); }
+      g.stream += s.stream; g.mouths.add(s.mouth); g.n += 1; g.sids.push(s.sid);
       const v = s.a[m];
       if (v !== null && v !== undefined && !isNaN(v)) { g.nv += 1; g.sum += +v; }
     });
@@ -526,13 +526,23 @@ require([
       placed.push(q);
       const gr = bar.gr, i = bar.i;
       const d = "M" + bar.quad.map(function (xy) { return xy[0].toFixed(1) + "," + xy[1].toFixed(1); }).join("L") + "Z";
-      const path = el("path", { d: d, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR, stroke: "rgba(255,255,255,0.9)",
-                                "stroke-width": 0.5, class: "hit" }, g);
+      const isSel = selected && gr.sids.some(function (s) { return selected.has(s); });
+      const path = el("path", { d: d, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR,
+                                stroke: isSel ? "#111827" : "rgba(255,255,255,0.9)", "stroke-width": isSel ? 2.2 : 0.5,
+                                class: "hit" }, g);
+      const kmText = "coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin);
+      path.addEventListener("click", function (e) {
+        e.stopPropagation();
+        tip.style.display = "none";
+        selectSamples(gr.sids.slice(), "Showing the " + gr.n + (gr.n === 1 ? " river sample" : " river samples") +
+          " of the bar at " + kmText + " and every stream upstream of them.");
+      });
       hover(path, "Coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin) + ": " + gr.n +
         (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +
         "). Upstream streams " + Math.round(gr.stream).toLocaleString() + " km. " +
         (bar.has ? label + " average " + fmt(bar.avg) + " ng/L (" + gr.nv + " of " + gr.n + " samples with a measured value)"
-                 : label + ": not detected or not measured in these samples (ND)"));
+                 : label + ": not detected or not measured in these samples (ND)") +
+        ". Click to show its streams and samples.");
     });
     // key in the card
     const stops = [0, 1 / 3, 2 / 3, 1];
@@ -546,6 +556,12 @@ require([
       "</span><span>" + fmt(Math.pow(10, (lo + hi) / 2)) + "</span><span>" + fmt(Math.pow(10, hi)) + "+</span><span>ND</span></div>";
   }
 
+  // Shared by the river-sample click and the coast-bar click. A selection filters the upstream-stream layer to the
+  // chosen networks (net_id) and every point layer that has a SampleID to the chosen samples; clicking an empty spot
+  // on the map clears it.
+  let trace = null, selected = null;
+  const quote = function (s) { return "'" + String(s).split("'").join("''") + "'"; };
+
   function setupTracing(map) {
     const river = map.allLayers.find(function (l) { return l.title === RIVER_LAYER_TITLE; });
     const up = map.allLayers.find(function (l) { return l.title === UPSTREAM_LAYER_TITLE; });
@@ -553,29 +569,69 @@ require([
     if (!river || !up || !wb) { setStatus("Upstream tracing layers not found in the web map."); return; }
     const field = function (layer, n) {
       return (layer.fields || []).map(function (f) { return f.name; })
-        .find(function (x) { return x.toLowerCase() === n.toLowerCase(); }) || n;
+        .find(function (x) { return x.toLowerCase() === n.toLowerCase(); }) || null;
     };
-    const netRiver = field(river, "net_id"), sidRiver = field(river, "SampleID");
-    const netUp = field(up, "net_id"), sidWb = field(wb, "SampleID");
-    river.outFields = [netRiver, sidRiver];
-    const wbStart = wb.definitionExpression || null;
-    const quote = function (s) { return "'" + String(s).split("'").join("''") + "'"; };
+    const points = map.allLayers.filter(function (l) {
+      return l.type === "feature" && l.geometryType === "point" && field(l, "SampleID");
+    }).toArray().map(function (l) { return { layer: l, sid: field(l, "SampleID"), start: l.definitionExpression || null }; });
+    trace = { river: river, up: up, wb: wb, points: points, netRiver: field(river, "net_id") || "net_id",
+              sidRiver: field(river, "SampleID") || "SampleID", netUp: field(up, "net_id") || "net_id",
+              sidWb: field(wb, "SampleID") || "SampleID", wbStart: wb.definitionExpression || null };
+    river.outFields = [trace.netRiver, trace.sidRiver];
     up.definitionExpression = NOTHING;
-    function clear() { up.definitionExpression = NOTHING; up.visible = false; wb.definitionExpression = wbStart; }
     view.on("click", function (event) {
       view.hitTest(event).then(function (res) {
         const hits = res.results.filter(function (r) { return r.graphic && r.graphic.layer; });
         const hit = hits.find(function (r) { return r.graphic.layer === river; });
         if (hit) {
+          // one river sample: its upstream streams, and only that sample in the water-body layer (as before)
+          clearSelection(false);
           const a = hit.graphic.attributes;
-          up.definitionExpression = a[netRiver] ? netUp + " = " + quote(a[netRiver]) : NOTHING;
+          up.definitionExpression = a[trace.netRiver] ? trace.netUp + " = " + quote(a[trace.netRiver]) : NOTHING;
           up.visible = true;
-          wb.definitionExpression = sidWb + " = " + quote(a[sidRiver]);
+          wb.definitionExpression = trace.sidWb + " = " + quote(a[trace.sidRiver]);
         } else if (!hits.length) {
-          clear();
+          clearSelection(true);
         }
       });
     });
+  }
+
+  function clearSelection(redraw) {
+    if (!trace) return;
+    trace.up.definitionExpression = NOTHING;
+    trace.up.visible = false;
+    trace.points.forEach(function (p) { p.layer.definitionExpression = p.start; });
+    trace.wb.definitionExpression = trace.wbStart;
+    if (selected) setStatus("Selection cleared.");
+    selected = null;
+    if (redraw) draw();
+  }
+
+  async function selectSamples(sids, message) {
+    if (!trace || !sids.length) return;
+    clearSelection(false);
+    const list = sids.map(quote).join(",");
+    try {
+      const q = trace.river.createQuery();
+      q.where = trace.sidRiver + " IN (" + list + ")"; q.outFields = [trace.netRiver]; q.returnGeometry = false;
+      const res = await trace.river.queryFeatures(q);
+      const nets = Array.from(new Set(res.features.map(function (f) { return f.attributes[trace.netRiver]; })
+        .filter(function (v) { return v !== null && v !== undefined && v !== ""; })));
+      trace.up.definitionExpression = nets.length ? trace.netUp + " IN (" + nets.map(quote).join(",") + ")" : NOTHING;
+      trace.up.visible = true;
+      trace.points.forEach(function (p) { p.layer.definitionExpression = p.sid + " IN (" + list + ")"; });
+      selected = new Set(sids);
+      setStatus(message + " " + nets.length + (nets.length === 1 ? " river network." : " river networks.") +
+                " Click an empty spot on the map to clear.");
+      draw();
+      // zoom to the streams (or, without streams, to the samples)
+      const ext = nets.length ? (await trace.up.queryExtent()).extent
+                              : (await trace.river.queryExtent({ where: trace.sidRiver + " IN (" + list + ")" })).extent;
+      if (ext) view.goTo(ext.expand(1.25)).catch(function () {});
+    } catch (e) {
+      setStatus("Could not show the bar's streams: " + e.message);
+    }
   }
 
   let pending = false;

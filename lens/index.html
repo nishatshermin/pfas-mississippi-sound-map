@@ -70,7 +70,7 @@
   <p class="count" id="count">Loading samples…</p>
   <p>Click a river/stream sample to show every stream that could drain to it; click an empty spot to clear.</p>
   <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
-  <p>Coast bars: for each 20 km of coast, the river samples whose streams reach the sea there. Length = average of the chosen PFAS measure; color = total upstream stream length.</p>
+  <p>Coast bars: the river samples whose rivers reach the sea along each stretch of coast. Length = upstream stream length; color = average of the chosen PFAS measure. Zoom in for finer stretches.</p>
   <button id="lens-toggle" type="button" aria-pressed="false">Turn lens on</button>
   <div id="coast-controls">
     <button id="coast-toggle" type="button" aria-pressed="false">Show coast bars</button>
@@ -93,9 +93,10 @@
 require([
   "esri/identity/OAuthInfo", "esri/identity/IdentityManager", "esri/WebMap", "esri/views/MapView",
   "esri/core/reactiveUtils", "esri/widgets/Legend", "esri/widgets/LayerList", "esri/widgets/Expand",
-  "esri/widgets/ScaleBar", "esri/widgets/Home", "esri/layers/FeatureLayer", "esri/geometry/Point"
+  "esri/widgets/ScaleBar", "esri/widgets/Home", "esri/layers/FeatureLayer", "esri/geometry/Point",
+  "esri/geometry/support/webMercatorUtils"
 ], function (OAuthInfo, esriId, WebMap, MapView, reactiveUtils, Legend, LayerList, Expand, ScaleBar, Home,
-             FeatureLayer, Point) {
+             FeatureLayer, Point, webMercatorUtils) {
 
   // ---- settings -------------------------------------------------------------------------------
   const PORTAL = "https://virginiatech.maps.arcgis.com";
@@ -117,11 +118,13 @@ require([
                 "PFPrS", "PFBS", "PFPeS", "PFHxS", "PFOS", "PFECHS", "FTS_4_2", "NEtFOSAA"];
   const PFAS_LABEL = { FTS_4_2: "4:2 FTS" };
   const PFAS_COLOR = "#1A9BC9";
-  // Coast bars: 20 km stretches of the coastal border line (private hosted layer). For each stretch, the river samples
-  // whose streams reach the sea there: bar length = average of the chosen PFAS measure (ng/L, measured values only;
-  // not detected is never 0), bar color = total upstream stream length. Bars point out to sea (the sea lies on the
-  // right-hand side of the line's direction everywhere).
-  const COAST_ITEM = "236a3ce15d8c4aa29391734316a9e1b8";
+  // Coast bars, drawn the way the norway-charts road accident map draws its bars: they stand on a heavily smoothed
+  // copy of the coast (so neighbouring bars point almost the same way and never cross), offset a small adaptive gap
+  // out to sea, and are regrouped at every zoom into about 60 stretches across what is on screen. Bar length =
+  // upstream stream length of the river samples whose rivers reach the sea there (square-root scale, relative to the
+  // tallest bar on screen); bar color = average of the chosen PFAS measure, blue (low) to red (high).
+  // Data: private hosted layer with the smoothed coast (coast_spine) and one point per river sample at its mouth.
+  const COAST_ITEM = "a8d45e3888b0458584aa212f80c4f468";
   const MEASURES = [["PFOS", "PFOS"], ["SumPFAS_10", "Total PFAS (10 shared compounds)"],
     ["SumPFCA_10", "Total PFCA (10 shared)"], ["SumPFSA_10", "Total PFSA (10 shared)"],
     ["PFOA", "PFOA"], ["PFHxS", "PFHxS"], ["PFNA", "PFNA"], ["PFDA", "PFDA"], ["PFHxA", "PFHxA"],
@@ -129,9 +132,9 @@ require([
     ["PFPeA", "PFPeA"], ["PFPrS", "PFPrS"], ["PFPeS", "PFPeS"], ["PFECHS", "PFECHS"],
     ["PFOS_branched", "PFOS, branched"], ["PFOS_linear", "PFOS, linear"], ["FTS_4_2", "4:2 FTS"],
     ["NEtFOSAA", "N-EtFOSAA"]];
-  const STREAM_BREAKS = [100, 1000, 10000, 100000];                   // km
-  const STREAM_COLORS = ["#c7e9b4", "#7fcdbb", "#41b6c4", "#2c7fb8", "#253494"];
-  const STREAM_LABELS = ["<100", "1k", "10k", "100k", ">100k km"];
+  const BAR_RAMP = [[59, 130, 189], [38, 166, 154], [242, 181, 61], [214, 64, 56]];   // blue, teal, amber, red
+  const ND_COLOR = "rgba(150, 150, 150, 0.75)";
+  const GAP_PX = 12, CLEAR_PX = 8;          // smallest gap between the coast and the bars; clearance past the coast
   // charts: angles in degrees, 0 = straight up, clockwise
   const CHARTS = [
     { key: "wb", flag: "WATER-BODY TYPE", flagAngle: 196, flagColor: "#23395B", from: -128, to: -12, open: true },
@@ -164,7 +167,7 @@ require([
 
   // ---- map and data ---------------------------------------------------------------------------
   let view, samples = [], lensOn = false;   // the lens starts turned off
-  let coastOn = false, coastBins = [];      // coast bars start turned off
+  let coastOn = false, spine = [], mouthSamples = [], scaleCache = null;   // coast bars start turned off
   const measureSel = document.getElementById("coast-measure");
   MEASURES.forEach(function (m) { const o = document.createElement("option"); o.value = m[0]; o.textContent = m[1];
                                   measureSel.appendChild(o); });
@@ -239,77 +242,225 @@ require([
       setStatus(samples.length.toLocaleString() + " samples loaded. PFAS bars: average ng/L of the samples with a measured value; not detected is left out, never 0.");
       draw();
       reactiveUtils.watch(function () { return [view.extent, view.width, view.height]; }, schedule);
+      reactiveUtils.watch(function () { return view.stationary; }, function (st) { if (st) { scaleCache = null; schedule(); } });
+    });
+  }
+
+  async function queryAll(fl) {
+    const page = (fl.capabilities && fl.capabilities.query.maxRecordCount) || 1000;
+    const total = await fl.queryFeatureCount({ where: "1=1" });
+    const feats = [];
+    for (let s = 0; s < total; s += page) {
+      const q = fl.createQuery();
+      q.where = "1=1"; q.outFields = ["*"]; q.returnGeometry = true; q.outSpatialReference = view.spatialReference;
+      q.start = s; q.num = page;
+      feats.push.apply(feats, (await fl.queryFeatures(q)).features);
+    }
+    return feats.map(function (f) {
+      const a = {};
+      Object.keys(f.attributes).forEach(function (k) { a[k.toLowerCase()] = f.attributes[k]; });
+      return { a: a, x: f.geometry.x, y: f.geometry.y };
     });
   }
 
   async function loadCoast() {
     try {
-      const fl = new FeatureLayer({ portalItem: { id: COAST_ITEM, portal: { url: PORTAL } } });
-      await fl.load();
-      const q = fl.createQuery();
-      q.where = "1=1"; q.outFields = ["*"]; q.returnGeometry = true; q.outSpatialReference = view.spatialReference;
-      const res = await fl.queryFeatures(q);
-      coastBins = res.features.map(function (f) {
-        const a = {};
-        Object.keys(f.attributes).forEach(function (k) { a[k.toLowerCase()] = f.attributes[k]; });
-        const pts = [];
-        f.geometry.paths.forEach(function (path) {
-          path.forEach(function (xy) { pts.push(new Point({ x: xy[0], y: xy[1], spatialReference: view.spatialReference })); });
-        });
-        return { a: a, pts: pts };
-      }).sort(function (u, v) { return u.a.bin - v.a.bin; });
+      for (const id of [0, 1]) {
+        const fl = new FeatureLayer({ portalItem: { id: COAST_ITEM, portal: { url: PORTAL } }, layerId: id });
+        await fl.load();
+        const rows = await queryAll(fl);
+        if (!rows.length) continue;
+        if ("raw_lon" in rows[0].a) {
+          spine = rows.map(function (r) {
+            const xy = webMercatorUtils.lngLatToXY(r.a.raw_lon, r.a.raw_lat);
+            return { km: r.a.km, x: r.x, y: r.y, rx: xy[0], ry: xy[1] };
+          }).sort(function (u, v) { return u.km - v.km; });
+        } else {
+          mouthSamples = rows.map(function (r) { return { km: r.a.coast_km, mouth: r.a.mouth_id, stream: r.a.stream_km, a: r.a }; })
+            .sort(function (u, v) { return u.km - v.km; });
+        }
+      }
     } catch (e) {
-      setStatus("Coast stretches could not be loaded: " + e.message);
+      setStatus("Coast chart data could not be loaded: " + e.message);
     }
   }
 
-  function streamColor(km) {
-    for (let i = 0; i < STREAM_BREAKS.length; i++) if (km < STREAM_BREAKS[i]) return STREAM_COLORS[i];
-    return STREAM_COLORS[STREAM_COLORS.length - 1];
+  function barColor(v01, alpha) {
+    const c = Math.max(0, Math.min(1, v01)) * (BAR_RAMP.length - 1);
+    const lo = Math.floor(c), hi = Math.min(BAR_RAMP.length - 1, lo + 1), f = c - lo;
+    const ch = function (i) { return Math.round(BAR_RAMP[lo][i] + (BAR_RAMP[hi][i] - BAR_RAMP[lo][i]) * f); };
+    return "rgba(" + ch(0) + "," + ch(1) + "," + ch(2) + "," + alpha + ")";
+  }
+  function niceStep(x) {
+    const m = Math.pow(10, Math.floor(Math.log10(x))), n = x / m;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * m;
+  }
+  function niceLevels(peak) {
+    if (!(peak > 0)) return [];
+    const step = niceStep(peak / 3), out = [];
+    for (let v = step; v <= peak * 1.0001; v += step) out.push(v);
+    return out.slice(-3);
+  }
+  function kmLabel(v) { return v >= 1000 ? (v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 }) + "k km" : Math.round(v) + " km"; }
+  function spineAt(km) {           // smoothed and real coast at a km along the coast (map coordinates)
+    let lo = 0, hi = spine.length - 1;
+    if (km <= spine[0].km) return spine[0];
+    if (km >= spine[hi].km) return spine[hi];
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (spine[mid].km <= km) lo = mid; else hi = mid; }
+    const a = spine[lo], b = spine[hi], f = (km - a.km) / (b.km - a.km || 1);
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, rx: a.rx + (b.rx - a.rx) * f, ry: a.ry + (b.ry - a.ry) * f };
+  }
+  function scr(x, y) { const s = view.toScreen(new Point({ x: x, y: y, spatialReference: view.spatialReference })); return s ? { x: s.x, y: s.y } : null; }
+
+  // Runs of the smoothed coast that are on (or near) the screen, each resampled at a fixed screen spacing and
+  // offset out to sea past the real coast.
+  function visibleBases(w, h) {
+    const margin = Math.min(w, h) * 0.4, runs = [];
+    let cur = null;
+    spine.forEach(function (s, i) {
+      const p = scr(s.x, s.y);
+      const inside = p && p.x > -margin && p.x < w + margin && p.y > -margin && p.y < h + margin;
+      if (inside) { if (!cur) { cur = { i0: i, i1: i, px: 0, last: p }; runs.push(cur); } else { cur.px += Math.hypot(p.x - cur.last.x, p.y - cur.last.y); cur.i1 = i; cur.last = p; } }
+      else cur = null;
+    });
+    return runs.filter(function (r) { return r.i1 > r.i0; }).map(function (r) {
+      const k0 = spine[r.i0].km, k1 = spine[r.i1].km, kmPerPx = (k1 - k0) / (r.px || 1);
+      const step = Math.min(2, Math.max(0.02, 24 * kmPerPx * 0.5));
+      const n = Math.max(2, Math.min(2000, Math.round((k1 - k0) / step)));
+      const base = [];
+      for (let i = 0; i <= n; i++) {
+        const km = k0 + (k1 - k0) * i / n, s = spineAt(km), p = scr(s.x, s.y), q = scr(s.rx, s.ry);
+        if (p && q) base.push({ km: km, pt: p, coast: q });
+      }
+      // outward normal: right-hand side of the line's direction = the sea, smoothed over a wide window
+      const raw = base.map(function (b, i) {
+        const a = base[Math.max(0, i - 4)], c = base[Math.min(base.length - 1, i + 4)];
+        const tx = c.pt.x - a.pt.x, ty = c.pt.y - a.pt.y, l = Math.hypot(tx, ty) || 1;
+        return { x: -ty / l, y: tx / l };
+      });
+      const outs = base.map(function (b, i) {
+        let nx = 0, ny = 0;
+        for (let j = Math.max(0, i - 24); j <= Math.min(base.length - 1, i + 24); j++) { nx += raw[j].x; ny += raw[j].y; }
+        const l = Math.hypot(nx, ny) || 1; return { x: nx / l, y: ny / l };
+      });
+      // gap: clear the real coast where it reaches out past the smoothed line
+      const exc = base.map(function (b, i) { return (b.coast.x - b.pt.x) * outs[i].x + (b.coast.y - b.pt.y) * outs[i].y; });
+      const reach = exc.map(function (e, i) { let m = 0; for (let j = Math.max(0, i - 2); j <= Math.min(exc.length - 1, i + 2); j++) m = Math.max(m, exc[j]); return m; });
+      return { kmPerPx: kmPerPx, pts: base.map(function (b, i) {
+        let s = 0, c = 0;
+        for (let j = Math.max(0, i - 4); j <= Math.min(base.length - 1, i + 4); j++) { s += reach[j]; c++; }
+        const gap = Math.max(GAP_PX, s / c + CLEAR_PX);
+        return { km: b.km, coast: b.coast, out: outs[i], pt: { x: b.pt.x + outs[i].x * gap, y: b.pt.y + outs[i].y * gap } };
+      }) };
+    });
+  }
+  function baseAt(base, km) {
+    const p = base.pts;
+    if (km <= p[0].km) return p[0];
+    if (km >= p[p.length - 1].km) return p[p.length - 1];
+    let lo = 0, hi = p.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (p[mid].km <= km) lo = mid; else hi = mid; }
+    const a = p[lo], b = p[hi], f = (km - a.km) / (b.km - a.km || 1);
+    const ox = a.out.x + (b.out.x - a.out.x) * f, oy = a.out.y + (b.out.y - a.out.y) * f, l = Math.hypot(ox, oy) || 1;
+    return { pt: { x: a.pt.x + (b.pt.x - a.pt.x) * f, y: a.pt.y + (b.pt.y - a.pt.y) * f }, out: { x: ox / l, y: oy / l } };
   }
 
   function drawCoast(w, h) {
-    if (!coastBins.length) return;
+    if (!spine.length || !mouthSamples.length) return;
     const m = measureSel.value.toLowerCase(), label = measureSel.options[measureSel.selectedIndex].text;
-    const vals = coastBins.map(function (b) { return b.a["avg_" + m]; }).filter(function (v) { return v !== null && v !== undefined; });
-    const maxV = vals.length ? Math.max.apply(null, vals) : 1;
-    const Lmax = Math.max(40, Math.min(w, h) * 0.2);
-    const g = el("g", {}, svg);
-    // the coastal border line itself, for reference
-    const all = [];
-    coastBins.forEach(function (b) { b.pts.forEach(function (q) { const s = view.toScreen(q); if (s) all.push(s.x.toFixed(1) + "," + s.y.toFixed(1)); }); });
-    el("polyline", { points: all.join(" "), fill: "none", stroke: "#5b6670", "stroke-width": 1, "stroke-dasharray": "3,3", opacity: 0.8 }, g);
-    coastBins.forEach(function (b) {
-      const a = b.a;
-      if (!a.n_samples) return;
-      const p0 = view.toScreen(b.pts[0]), p1 = view.toScreen(b.pts[b.pts.length - 1]);
-      if (!p0 || !p1) return;
-      if (Math.max(p0.x, p1.x) < -Lmax || Math.min(p0.x, p1.x) > w + Lmax ||
-          Math.max(p0.y, p1.y) < -Lmax || Math.min(p0.y, p1.y) > h + Lmax) return;
-      const dx = p1.x - p0.x, dy = p1.y - p0.y, len = Math.hypot(dx, dy);
-      if (len < 1.5) return;
-      const ux = dx / len, uy = dy / len, nx = -uy, ny = ux;          // nx, ny: towards the sea (right-hand side)
-      const s0 = [p0.x + ux * len * 0.08, p0.y + uy * len * 0.08], s1 = [p1.x - ux * len * 0.08, p1.y - uy * len * 0.08];
-      const v = a["avg_" + m], n = a["n_" + m] || 0, tested = a["t_" + m] || 0;
-      const L = (v !== null && v !== undefined) ? Math.max(2, v / maxV * Lmax) : 4;
-      const d = "M" + s0 + "L" + s1 + "L" + [s1[0] + nx * L, s1[1] + ny * L] + "L" + [s0[0] + nx * L, s0[1] + ny * L] + "Z";
-      const has = v !== null && v !== undefined;
-      const bar = el("path", { d: d, fill: has ? streamColor(a.stream_km) : "#ffffff",
-                               stroke: has ? "#ffffff" : "#8c8c8c", "stroke-width": has ? 0.5 : 0.8,
-                               "stroke-dasharray": has ? "" : "2,2", class: "hit" }, g);
-      const where = "Coast km " + Math.round(a.km_from) + "-" + Math.round(a.km_to) + ": " + a.n_samples +
-        (a.n_samples === 1 ? " river sample" : " river samples") + " (" + a.n_mouths + (a.n_mouths === 1 ? " river mouth" : " river mouths") +
-        "), upstream streams " + Math.round(a.stream_km).toLocaleString() + " km. ";
-      const what = has ? label + " average " + fmt(v) + " ng/L (" + n + " of " + tested + " tested samples with a measured value)"
-                       : (tested ? label + ": not detected in any of the " + tested + " tested samples (ND)"
-                                 : label + ": not measured in these samples");
-      hover(bar, where + what);
+    const bases = visibleBases(w, h);
+    if (!bases.length) return;
+    // bin size: about 60 bars across what is on screen; frozen with the height scale while the map moves
+    let k0 = Infinity, k1 = -Infinity, spanPx = 0;
+    bases.forEach(function (b) { k0 = Math.min(k0, b.pts[0].km); k1 = Math.max(k1, b.pts[b.pts.length - 1].km);
+      const xs = b.pts.map(function (q) { return q.pt.x; }), ys = b.pts.map(function (q) { return q.pt.y; });
+      spanPx = Math.max(spanPx, Math.hypot(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys))); });
+    const visKm = bases.reduce(function (s, b) { return s + (b.pts[b.pts.length - 1].km - b.pts[0].km); }, 0);
+    const maxBarPx = Math.min(Math.min(w, h) * 0.3, spanPx * 0.3);
+    const moving = view.interacting || view.animation;
+    let bin, peak;
+    if (moving && scaleCache) { bin = scaleCache.bin; peak = scaleCache.peak; }
+    else { bin = Math.min(50, Math.max(1, niceStep(visKm / 60))); }
+    // samples grouped into bins along the coast
+    const groups = new Map();
+    mouthSamples.forEach(function (s) {
+      const i = Math.floor(s.km / bin);
+      let g = groups.get(i);
+      if (!g) { g = { stream: 0, mouths: new Set(), n: 0, nv: 0, sum: 0 }; groups.set(i, g); }
+      g.stream += s.stream; g.mouths.add(s.mouth); g.n += 1;
+      const v = s.a[m];
+      if (v !== null && v !== undefined && !isNaN(v)) { g.nv += 1; g.sum += +v; }
     });
-    const key = document.getElementById("coast-key");
-    key.innerHTML = "Bar length: " + label + " average (longest = " + fmt(maxV) + " ng/L). Dashed stub = ND or not measured." +
-      "<div>Bar color: upstream stream length</div><div class='ramp'>" +
-      STREAM_COLORS.map(function (c) { return "<span style='background:" + c + "'></span>"; }).join("") +
-      "</div><div class='ticks'>" + STREAM_LABELS.map(function (s) { return "<span>" + s + "</span>"; }).join("") + "</div>";
+    if (!(moving && scaleCache)) {
+      peak = 0;
+      bases.forEach(function (b) {
+        for (let i = Math.floor(b.pts[0].km / bin); i <= Math.floor(b.pts[b.pts.length - 1].km / bin); i++) {
+          const g = groups.get(i); if (g && g.stream > peak) peak = g.stream;
+        }
+      });
+      scaleCache = { bin: bin, peak: peak };
+    }
+    const heightPx = function (v) { return peak ? Math.sqrt(v / peak) * maxBarPx : 0; };
+    // color scale for the chosen measure: log scale over the 5th to 95th percentile of the samples' values
+    const vals = mouthSamples.map(function (s) { return s.a[m]; }).filter(function (v) { return v !== null && v !== undefined && v > 0; })
+      .map(Number).sort(function (a, b) { return a - b; });
+    const q = function (f) { return vals.length ? vals[Math.min(vals.length - 1, Math.floor(f * (vals.length - 1)))] : 1; };
+    const lo = Math.log10(q(0.05)), hi = Math.max(lo + 0.3, Math.log10(q(0.95)));
+    const norm = function (v) { return (Math.log10(v) - lo) / (hi - lo); };
+
+    const g = el("g", {}, svg);
+    bases.forEach(function (b) {
+      // the real coast, for reference
+      el("polyline", { points: b.pts.map(function (q) { return q.coast.x.toFixed(1) + "," + q.coast.y.toFixed(1); }).join(" "),
+                       fill: "none", stroke: "#5b6670", "stroke-width": 1, opacity: 0.6 }, g);
+    });
+    // scale lines (upstream stream length) parallel to the bars' baseline, on the longest run
+    const main = bases.reduce(function (a, b) { return b.pts.length > a.pts.length ? b : a; }, bases[0]);
+    niceLevels(peak).forEach(function (level) {
+      const L = heightPx(level);
+      const line = main.pts.map(function (q) { return [q.pt.x + q.out.x * L, q.pt.y + q.out.y * L]; });
+      el("polyline", { points: line.map(function (xy) { return xy[0].toFixed(1) + "," + xy[1].toFixed(1); }).join(" "),
+                       fill: "none", stroke: "rgba(37,41,50,0.35)", "stroke-width": 1, "stroke-dasharray": "4,3" }, g);
+      [line[Math.floor(line.length / 2)], line[line.length - 1]].forEach(function (xy) {
+        const tx = el("text", { x: xy[0] + 4, y: xy[1], "font-size": 10.5, fill: "#3a3f47", "paint-order": "stroke",
+                                stroke: "rgba(255,255,255,.9)", "stroke-width": 3, "dominant-baseline": "middle" }, g);
+        tx.textContent = kmLabel(level);
+      });
+    });
+    // bars
+    bases.forEach(function (b) {
+      const s0 = b.pts[0].km, s1 = b.pts[b.pts.length - 1].km;
+      for (let i = Math.floor(s0 / bin); i <= Math.floor(s1 / bin); i++) {
+        const gr = groups.get(i);
+        if (!gr || !(gr.stream > 0)) continue;
+        const from = Math.max(s0, i * bin + bin * 0.08), to = Math.min(s1, (i + 1) * bin - bin * 0.08);
+        if (to <= from) continue;
+        const a = baseAt(b, from), c = baseAt(b, to);
+        const basePx = Math.hypot(c.pt.x - a.pt.x, c.pt.y - a.pt.y);
+        if (basePx > (to - from) / b.kmPerPx * 3 + 40) continue;      // a jump in the baseline: skip
+        const ox = a.out.x + c.out.x, oy = a.out.y + c.out.y, ol = Math.hypot(ox, oy);
+        if (ol < 0.2) continue;
+        const ux = ox / ol, uy = oy / ol, L = Math.max(2, heightPx(gr.stream));
+        const d = "M" + a.pt.x + "," + a.pt.y + "L" + c.pt.x + "," + c.pt.y + "L" + (c.pt.x + ux * L) + "," + (c.pt.y + uy * L) +
+                  "L" + (a.pt.x + ux * L) + "," + (a.pt.y + uy * L) + "Z";
+        const has = gr.nv > 0, avg = has ? gr.sum / gr.nv : null;
+        const bar = el("path", { d: d, fill: has ? barColor(norm(avg), 0.92) : ND_COLOR, stroke: "rgba(255,255,255,0.8)",
+                                 "stroke-width": 0.5, class: "hit" }, g);
+        hover(bar, "Coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin) + ": " + gr.n +
+          (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +
+          "). Upstream streams " + Math.round(gr.stream).toLocaleString() + " km. " +
+          (has ? label + " average " + fmt(avg) + " ng/L (" + gr.nv + " of " + gr.n + " samples with a measured value)"
+               : label + ": not detected or not measured in these samples (ND)"));
+      }
+    });
+    // key in the card
+    const stops = [0, 1 / 3, 2 / 3, 1];
+    document.getElementById("coast-key").innerHTML =
+      "Bar length: upstream stream length (square-root scale; dashed lines in km). Stretch size now " + bin + " km." +
+      "<div style='margin-top:4px'>Bar color: " + label + " average, ng/L</div><div class='ramp'>" +
+      stops.map(function (f) { return "<span style='background:" + barColor(f, 1) + "'></span>"; }).join("") +
+      "<span style='background:" + ND_COLOR + ";flex:0.6'></span></div><div class='ticks'><span>" + fmt(Math.pow(10, lo)) +
+      "</span><span>" + fmt(Math.pow(10, (lo + hi) / 2)) + "</span><span>" + fmt(Math.pow(10, hi)) + "+</span><span>ND</span></div>";
   }
 
   function setupTracing(map) {

@@ -376,7 +376,7 @@ require([
       const xs = b.pts.map(function (q) { return q.pt.x; }), ys = b.pts.map(function (q) { return q.pt.y; });
       spanPx = Math.max(spanPx, Math.hypot(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys))); });
     const visKm = bases.reduce(function (s, b) { return s + (b.pts[b.pts.length - 1].km - b.pts[0].km); }, 0);
-    // radius of curvature of the baseline on screen (px), 10th percentile over the visible baseline
+    // radius of curvature of the baseline on screen (px), 25th percentile over the visible baseline
     const radii = [];
     bases.forEach(function (b) {
       const k = 10;
@@ -387,8 +387,8 @@ require([
       }
     });
     radii.sort(function (a, b) { return a - b; });
-    const rCurve = radii.length ? radii[Math.floor(radii.length * 0.1)] : Infinity;
-    const maxBarPx = Math.max(24, Math.min(Math.min(w, h) * 0.2, spanPx * 0.3, rCurve * 0.7));
+    const rCurve = radii.length ? radii[Math.floor(radii.length * 0.25)] : Infinity;
+    const maxBarPx = Math.max(30, Math.min(Math.min(w, h) * 0.22, spanPx * 0.3, rCurve * 0.9));
     const moving = view.interacting || view.animation;
     let bin, peak;
     if (moving && scaleCache) { bin = scaleCache.bin; peak = scaleCache.peak; }

@@ -310,6 +310,27 @@ require([
     const a = spine[lo], b = spine[hi], f = (km - a.km) / (b.km - a.km || 1);
     return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, rx: a.rx + (b.rx - a.rx) * f, ry: a.ry + (b.ry - a.ry) * f };
   }
+  // overlap test for two convex quadrilaterals (separating axis theorem)
+  function quadsOverlap(p, q) {
+    const polys = [p, q];
+    for (let k = 0; k < 2; k++) {
+      const poly = polys[k];
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length], nx = -(b[1] - a[1]), ny = b[0] - a[0];
+        let pmin = Infinity, pmax = -Infinity, qmin = Infinity, qmax = -Infinity;
+        p.forEach(function (v) { const s = v[0] * nx + v[1] * ny; pmin = Math.min(pmin, s); pmax = Math.max(pmax, s); });
+        q.forEach(function (v) { const s = v[0] * nx + v[1] * ny; qmin = Math.min(qmin, s); qmax = Math.max(qmax, s); });
+        if (pmax < qmin || qmax < pmin) return false;
+      }
+    }
+    return true;
+  }
+  function shrink(quad, px) {        // pull the corners in a little so bars that only touch do not count as overlapping
+    const cx = quad.reduce(function (s, v) { return s + v[0]; }, 0) / quad.length;
+    const cy = quad.reduce(function (s, v) { return s + v[1]; }, 0) / quad.length;
+    return quad.map(function (v) { const dx = v[0] - cx, dy = v[1] - cy, l = Math.hypot(dx, dy) || 1;
+                                   return [v[0] - dx / l * px, v[1] - dy / l * px]; });
+  }
   function scr(x, y) { const s = view.toScreen(new Point({ x: x, y: y, spatialReference: view.spatialReference })); return s ? { x: s.x, y: s.y } : null; }
 
   // Runs of the smoothed coast that are on (or near) the screen, each resampled at a fixed screen spacing and
@@ -463,7 +484,8 @@ require([
         tx.textContent = kmLabel(level);
       });
     }
-    // bars
+    // bars: built first, then placed without overlap
+    const bars = [];
     bases.forEach(function (b) {
       const s0 = b.pts[0].km, s1 = b.pts[b.pts.length - 1].km;
       for (let i = Math.floor(s0 / bin); i <= Math.floor(s1 / bin); i++) {
@@ -481,21 +503,43 @@ require([
         const mx = (a.pt.x + c.pt.x) / 2, my = (a.pt.y + c.pt.y) / 2;
         const vx = (c.pt.x - a.pt.x) / (basePx || 1), vy = (c.pt.y - a.pt.y) / (basePx || 1);
         const A = [mx - vx * half, my - vy * half], C = [mx + vx * half, my + vy * half];
-        const d = "M" + A + "L" + C + "L" + [C[0] + ux * L, C[1] + uy * L] + "L" + [A[0] + ux * L, A[1] + uy * L] + "Z";
+        const quad = [A, C, [C[0] + ux * L, C[1] + uy * L], [A[0] + ux * L, A[1] + uy * L]];
         const has = gr.nv > 0, avg = has ? gr.sum / gr.nv : null;
-        const bar = el("path", { d: d, fill: has ? barColor(norm(avg), 1) : ND_COLOR, stroke: "rgba(255,255,255,0.9)",
-                                 "stroke-width": 0.5, class: "hit" }, g);
-        hover(bar, "Coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin) + ": " + gr.n +
-          (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +
-          "). Upstream streams " + Math.round(gr.stream).toLocaleString() + " km. " +
-          (has ? label + " average " + fmt(avg) + " ng/L (" + gr.nv + " of " + gr.n + " samples with a measured value)"
-               : label + ": not detected or not measured in these samples (ND)"));
+        bars.push({ quad: quad, gr: gr, has: has, avg: avg, i: i, foot: [(A[0] + C[0]) / 2, (A[1] + C[1]) / 2] });
       }
+    });
+    // Where the coast bends tightly (the Mississippi coast, the Mississippi delta), bars on the inside of the bend can
+    // overlap at a small scale. Bars are placed longest stream first; a bar that would overlap one already placed is
+    // hidden at this zoom (a small dot marks its spot) and comes back once zooming in gives it room.
+    bars.sort(function (u, v) { return v.gr.stream - u.gr.stream; });
+    const placed = [];
+    let hidden = 0;
+    bars.forEach(function (bar) {
+      const q = shrink(bar.quad, 0.6);
+      if (placed.some(function (p) { return quadsOverlap(p, q); })) {
+        hidden += 1;
+        const dot = el("circle", { cx: bar.foot[0], cy: bar.foot[1], r: 3.2, fill: "#ffffff", stroke: "#6b7280",
+                                   "stroke-width": 1.2, class: "hit" }, g);
+        hover(dot, "A bar is hidden here because it would overlap a neighbouring bar at this zoom. Zoom in to see it.");
+        return;
+      }
+      placed.push(q);
+      const gr = bar.gr, i = bar.i;
+      const d = "M" + bar.quad.map(function (xy) { return xy[0].toFixed(1) + "," + xy[1].toFixed(1); }).join("L") + "Z";
+      const path = el("path", { d: d, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR, stroke: "rgba(255,255,255,0.9)",
+                                "stroke-width": 0.5, class: "hit" }, g);
+      hover(path, "Coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin) + ": " + gr.n +
+        (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +
+        "). Upstream streams " + Math.round(gr.stream).toLocaleString() + " km. " +
+        (bar.has ? label + " average " + fmt(bar.avg) + " ng/L (" + gr.nv + " of " + gr.n + " samples with a measured value)"
+                 : label + ": not detected or not measured in these samples (ND)"));
     });
     // key in the card
     const stops = [0, 1 / 3, 2 / 3, 1];
     document.getElementById("coast-key").innerHTML =
       "Bar length: upstream stream length (log scale; dashed lines at 10, 100, 1,000 km and so on). Stretch size now " + bin + " km." +
+      (hidden ? " " + hidden + (hidden === 1 ? " bar is" : " bars are") + " hidden to avoid overlap (white dots); zoom in to see " +
+                (hidden === 1 ? "it." : "them.") : "") +
       "<div style='margin-top:4px'>Bar color: " + label + " average, ng/L</div><div class='ramp'>" +
       stops.map(function (f) { return "<span style='background:" + barColor(f, 1) + "'></span>"; }).join("") +
       "<span style='background:" + ND_COLOR + ";flex:0.6'></span></div><div class='ticks'><span>" + fmt(Math.pow(10, lo)) +

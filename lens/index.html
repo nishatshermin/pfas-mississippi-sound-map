@@ -210,7 +210,7 @@ require([
     const wbStart = wb.definitionExpression || null;
     const quote = function (s) { return "'" + String(s).split("'").join("''") + "'"; };
     up.definitionExpression = NOTHING;
-    function clear() { up.definitionExpression = NOTHING; wb.definitionExpression = wbStart; }
+    function clear() { up.definitionExpression = NOTHING; up.visible = false; wb.definitionExpression = wbStart; }
     view.on("click", function (event) {
       view.hitTest(event).then(function (res) {
         const hits = res.results.filter(function (r) { return r.graphic && r.graphic.layer; });

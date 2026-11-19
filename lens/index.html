@@ -256,8 +256,9 @@ require([
       const txt = el("text", { x: p[0], y: p[1], "font-size": 11, fill: "var(--ink)", "dominant-baseline": "middle",
                                "text-anchor": right ? "start" : "end", transform: "rotate(" + rot + " " + p[0] + " " + p[1] + ")",
                                "paint-order": "stroke", stroke: "rgba(255,255,255,.85)", "stroke-width": 3 }, g);
-      txt.textContent = (right ? d.label + "  " + (d.unit === "ng/L" ? fmt(d.value) : d.value)
-                               : (d.unit === "ng/L" ? fmt(d.value) : d.value) + "  " + d.label);
+      // a compound found in no sample in the lens is "ND" (not detected), never 0
+      const shown = d.unit === "ng/L" ? (d.n ? fmt(d.value) : "ND") : d.value;
+      txt.textContent = right ? d.label + "  " + shown : shown + "  " + d.label;
     });
   }
 

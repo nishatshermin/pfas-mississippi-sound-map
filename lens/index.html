@@ -134,7 +134,7 @@ require([
     ["PFOS_branched", "PFOS, branched"], ["PFOS_linear", "PFOS, linear"], ["FTS_4_2", "4:2 FTS"],
     ["NEtFOSAA", "N-EtFOSAA"]];
   const BAR_RAMP = [[59, 130, 189], [38, 166, 154], [242, 181, 61], [214, 64, 56]];   // blue, teal, amber, red
-  const ND_COLOR = "rgba(150, 150, 150, 0.75)";
+  const ND_COLOR = "rgb(165, 165, 165)";
   const GAP_PX = 12, CLEAR_PX = 8, MAX_GAP_PX = 45;   // gap between the coast and the bars: smallest, clearance, largest
   // charts: angles in degrees, 0 = straight up, clockwise
   const CHARTS = [
@@ -370,17 +370,29 @@ require([
     const m = measureSel.value.toLowerCase(), label = measureSel.options[measureSel.selectedIndex].text;
     const bases = visibleBases(w, h);
     if (!bases.length) return;
-    // bin size: about 60 bars across what is on screen; frozen with the height scale while the map moves
+    // bin size: about 120 stretches across what is on screen; frozen with the height scale while the map moves
     let k0 = Infinity, k1 = -Infinity, spanPx = 0;
     bases.forEach(function (b) { k0 = Math.min(k0, b.pts[0].km); k1 = Math.max(k1, b.pts[b.pts.length - 1].km);
       const xs = b.pts.map(function (q) { return q.pt.x; }), ys = b.pts.map(function (q) { return q.pt.y; });
       spanPx = Math.max(spanPx, Math.hypot(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys))); });
     const visKm = bases.reduce(function (s, b) { return s + (b.pts[b.pts.length - 1].km - b.pts[0].km); }, 0);
-    const maxBarPx = Math.min(Math.min(w, h) * 0.25, spanPx * 0.3);
+    // radius of curvature of the baseline on screen (px), 10th percentile over the visible baseline
+    const radii = [];
+    bases.forEach(function (b) {
+      const k = 10;
+      for (let i = k; i < b.pts.length - k; i += 3) {
+        const p0 = b.pts[i - k], p1 = b.pts[i + k];
+        const ang = Math.acos(Math.max(-1, Math.min(1, p0.out.x * p1.out.x + p0.out.y * p1.out.y)));
+        if (ang > 1e-3) radii.push(Math.hypot(p1.pt.x - p0.pt.x, p1.pt.y - p0.pt.y) / ang);
+      }
+    });
+    radii.sort(function (a, b) { return a - b; });
+    const rCurve = radii.length ? radii[Math.floor(radii.length * 0.1)] : Infinity;
+    const maxBarPx = Math.max(24, Math.min(Math.min(w, h) * 0.2, spanPx * 0.3, rCurve * 0.7));
     const moving = view.interacting || view.animation;
     let bin, peak;
     if (moving && scaleCache) { bin = scaleCache.bin; peak = scaleCache.peak; }
-    else { bin = Math.min(50, Math.max(1, niceStep(visKm / 60))); }
+    else { bin = Math.min(50, Math.max(1, niceStep(visKm / 120))); }
     // samples grouped into bins along the coast
     const groups = new Map();
     mouthSamples.forEach(function (s) {
@@ -400,7 +412,10 @@ require([
       });
       scaleCache = { bin: bin, peak: peak };
     }
-    const heightPx = function (v) { return peak > 1 ? Math.max(0, Math.log10(1 + v) / Math.log10(1 + peak)) * maxBarPx : 0; };
+    const heightPx = function (v) {
+      if (!(peak > 10)) return v > 0 ? maxBarPx * 0.05 : 0;
+      return Math.max(0.04, (Math.log10(Math.max(v, 10)) - 1) / (Math.log10(peak) - 1)) * maxBarPx;
+    };
     // color scale for the chosen measure: log scale over the 5th to 95th percentile of the samples' values
     const vals = mouthSamples.map(function (s) { return s.a[m]; }).filter(function (v) { return v !== null && v !== undefined && v > 0; })
       .map(Number).sort(function (a, b) { return a - b; });
@@ -468,7 +483,7 @@ require([
         const A = [mx - vx * half, my - vy * half], C = [mx + vx * half, my + vy * half];
         const d = "M" + A + "L" + C + "L" + [C[0] + ux * L, C[1] + uy * L] + "L" + [A[0] + ux * L, A[1] + uy * L] + "Z";
         const has = gr.nv > 0, avg = has ? gr.sum / gr.nv : null;
-        const bar = el("path", { d: d, fill: has ? barColor(norm(avg), 0.92) : ND_COLOR, stroke: "rgba(255,255,255,0.8)",
+        const bar = el("path", { d: d, fill: has ? barColor(norm(avg), 1) : ND_COLOR, stroke: "rgba(255,255,255,0.9)",
                                  "stroke-width": 0.5, class: "hit" }, g);
         hover(bar, "Coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin) + ": " + gr.n +
           (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +

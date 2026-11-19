@@ -41,6 +41,16 @@
     background: #23395B; color: #fff; cursor: pointer; }
   #signin a { display: block; margin-top: 8px; color: #23395B; font-size: 12px; }
   #card #status { font-size: 11px; margin-top: 6px; }
+  #coast-controls { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e3e3; }
+  #coast-toggle { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 4px;
+    border: 1px solid #253494; background: #fff; color: #253494; cursor: pointer; }
+  #coast-toggle[aria-pressed="true"] { background: #253494; color: #fff; }
+  #coast-controls label { display: block; margin: 6px 0 2px; font-size: 11.5px; color: var(--muted); }
+  #coast-measure { font: inherit; font-size: 12px; width: 100%; padding: 3px; }
+  #coast-key { margin-top: 6px; font-size: 11px; color: var(--muted); display: none; }
+  #coast-key .ramp { display: flex; margin: 3px 0 1px; }
+  #coast-key .ramp span { flex: 1; height: 9px; }
+  #coast-key .ticks { display: flex; justify-content: space-between; font-size: 10px; }
   #legend-panel { position: absolute; right: 12px; bottom: 26px; width: 250px; max-height: 46%; overflow: auto;
     background: var(--paper); border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); z-index: 3; }
   #legend-panel h2 { font-size: 12.5px; margin: 0; padding: 7px 10px 2px; position: sticky; top: 0; background: var(--paper); z-index: 1; }
@@ -60,7 +70,14 @@
   <p class="count" id="count">Loading samples…</p>
   <p>Click a river/stream sample to show every stream that could drain to it; click an empty spot to clear.</p>
   <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
+  <p>Coast bars: for each 20 km of coast, the river samples whose streams reach the sea there. Length = average of the chosen PFAS measure; color = total upstream stream length.</p>
   <button id="lens-toggle" type="button" aria-pressed="false">Turn lens on</button>
+  <div id="coast-controls">
+    <button id="coast-toggle" type="button" aria-pressed="false">Show coast bars</button>
+    <label for="coast-measure">PFAS measure for the coast bars</label>
+    <select id="coast-measure"></select>
+    <div id="coast-key"></div>
+  </div>
   <p id="status"></p>
 </div>
 <div id="legend-panel" aria-label="Legend"><h2>Legend</h2><div id="legend"></div></div>
@@ -76,8 +93,9 @@
 require([
   "esri/identity/OAuthInfo", "esri/identity/IdentityManager", "esri/WebMap", "esri/views/MapView",
   "esri/core/reactiveUtils", "esri/widgets/Legend", "esri/widgets/LayerList", "esri/widgets/Expand",
-  "esri/widgets/ScaleBar", "esri/widgets/Home"
-], function (OAuthInfo, esriId, WebMap, MapView, reactiveUtils, Legend, LayerList, Expand, ScaleBar, Home) {
+  "esri/widgets/ScaleBar", "esri/widgets/Home", "esri/layers/FeatureLayer", "esri/geometry/Point"
+], function (OAuthInfo, esriId, WebMap, MapView, reactiveUtils, Legend, LayerList, Expand, ScaleBar, Home,
+             FeatureLayer, Point) {
 
   // ---- settings -------------------------------------------------------------------------------
   const PORTAL = "https://virginiatech.maps.arcgis.com";
@@ -99,6 +117,21 @@ require([
                 "PFPrS", "PFBS", "PFPeS", "PFHxS", "PFOS", "PFECHS", "FTS_4_2", "NEtFOSAA"];
   const PFAS_LABEL = { FTS_4_2: "4:2 FTS" };
   const PFAS_COLOR = "#1A9BC9";
+  // Coast bars: 20 km stretches of the coastal border line (private hosted layer). For each stretch, the river samples
+  // whose streams reach the sea there: bar length = average of the chosen PFAS measure (ng/L, measured values only;
+  // not detected is never 0), bar color = total upstream stream length. Bars point out to sea (the sea lies on the
+  // right-hand side of the line's direction everywhere).
+  const COAST_ITEM = "236a3ce15d8c4aa29391734316a9e1b8";
+  const MEASURES = [["PFOS", "PFOS"], ["SumPFAS_10", "Total PFAS (10 shared compounds)"],
+    ["SumPFCA_10", "Total PFCA (10 shared)"], ["SumPFSA_10", "Total PFSA (10 shared)"],
+    ["PFOA", "PFOA"], ["PFHxS", "PFHxS"], ["PFNA", "PFNA"], ["PFDA", "PFDA"], ["PFHxA", "PFHxA"],
+    ["PFHpA", "PFHpA"], ["PFBS", "PFBS"], ["PFUdA", "PFUdA"], ["PFDoA", "PFDoA"], ["PFBA", "PFBA"],
+    ["PFPeA", "PFPeA"], ["PFPrS", "PFPrS"], ["PFPeS", "PFPeS"], ["PFECHS", "PFECHS"],
+    ["PFOS_branched", "PFOS, branched"], ["PFOS_linear", "PFOS, linear"], ["FTS_4_2", "4:2 FTS"],
+    ["NEtFOSAA", "N-EtFOSAA"]];
+  const STREAM_BREAKS = [100, 1000, 10000, 100000];                   // km
+  const STREAM_COLORS = ["#c7e9b4", "#7fcdbb", "#41b6c4", "#2c7fb8", "#253494"];
+  const STREAM_LABELS = ["<100", "1k", "10k", "100k", ">100k km"];
   // charts: angles in degrees, 0 = straight up, clockwise
   const CHARTS = [
     { key: "wb", flag: "WATER-BODY TYPE", flagAngle: 196, flagColor: "#23395B", from: -128, to: -12, open: true },
@@ -131,6 +164,19 @@ require([
 
   // ---- map and data ---------------------------------------------------------------------------
   let view, samples = [], lensOn = false;   // the lens starts turned off
+  let coastOn = false, coastBins = [];      // coast bars start turned off
+  const measureSel = document.getElementById("coast-measure");
+  MEASURES.forEach(function (m) { const o = document.createElement("option"); o.value = m[0]; o.textContent = m[1];
+                                  measureSel.appendChild(o); });
+  measureSel.addEventListener("change", function () { draw(); });
+  const coastToggle = document.getElementById("coast-toggle");
+  coastToggle.addEventListener("click", function () {
+    coastOn = !coastOn;
+    coastToggle.setAttribute("aria-pressed", String(coastOn));
+    coastToggle.textContent = coastOn ? "Hide coast bars" : "Show coast bars";
+    document.getElementById("coast-key").style.display = coastOn ? "block" : "none";
+    draw();
+  });
   const toggle = document.getElementById("lens-toggle");
   toggle.addEventListener("click", function () {
     lensOn = !lensOn;
@@ -189,10 +235,81 @@ require([
           samples.push({ geom: g.geometry, wb: g.attributes[wbField] || "Uncertain", pfas: vals });
         });
       }
-      setStatus(samples.length.toLocaleString() + " samples loaded. PFAS bars: average ng/L of the samples in the lens with a measured value; not detected is left out, never 0.");
+      await loadCoast();
+      setStatus(samples.length.toLocaleString() + " samples loaded. PFAS bars: average ng/L of the samples with a measured value; not detected is left out, never 0.");
       draw();
       reactiveUtils.watch(function () { return [view.extent, view.width, view.height]; }, schedule);
     });
+  }
+
+  async function loadCoast() {
+    try {
+      const fl = new FeatureLayer({ portalItem: { id: COAST_ITEM, portal: { url: PORTAL } } });
+      await fl.load();
+      const q = fl.createQuery();
+      q.where = "1=1"; q.outFields = ["*"]; q.returnGeometry = true; q.outSpatialReference = view.spatialReference;
+      const res = await fl.queryFeatures(q);
+      coastBins = res.features.map(function (f) {
+        const a = {};
+        Object.keys(f.attributes).forEach(function (k) { a[k.toLowerCase()] = f.attributes[k]; });
+        const pts = [];
+        f.geometry.paths.forEach(function (path) {
+          path.forEach(function (xy) { pts.push(new Point({ x: xy[0], y: xy[1], spatialReference: view.spatialReference })); });
+        });
+        return { a: a, pts: pts };
+      }).sort(function (u, v) { return u.a.bin - v.a.bin; });
+    } catch (e) {
+      setStatus("Coast stretches could not be loaded: " + e.message);
+    }
+  }
+
+  function streamColor(km) {
+    for (let i = 0; i < STREAM_BREAKS.length; i++) if (km < STREAM_BREAKS[i]) return STREAM_COLORS[i];
+    return STREAM_COLORS[STREAM_COLORS.length - 1];
+  }
+
+  function drawCoast(w, h) {
+    if (!coastBins.length) return;
+    const m = measureSel.value.toLowerCase(), label = measureSel.options[measureSel.selectedIndex].text;
+    const vals = coastBins.map(function (b) { return b.a["avg_" + m]; }).filter(function (v) { return v !== null && v !== undefined; });
+    const maxV = vals.length ? Math.max.apply(null, vals) : 1;
+    const Lmax = Math.max(40, Math.min(w, h) * 0.2);
+    const g = el("g", {}, svg);
+    // the coastal border line itself, for reference
+    const all = [];
+    coastBins.forEach(function (b) { b.pts.forEach(function (q) { const s = view.toScreen(q); if (s) all.push(s.x.toFixed(1) + "," + s.y.toFixed(1)); }); });
+    el("polyline", { points: all.join(" "), fill: "none", stroke: "#5b6670", "stroke-width": 1, "stroke-dasharray": "3,3", opacity: 0.8 }, g);
+    coastBins.forEach(function (b) {
+      const a = b.a;
+      if (!a.n_samples) return;
+      const p0 = view.toScreen(b.pts[0]), p1 = view.toScreen(b.pts[b.pts.length - 1]);
+      if (!p0 || !p1) return;
+      if (Math.max(p0.x, p1.x) < -Lmax || Math.min(p0.x, p1.x) > w + Lmax ||
+          Math.max(p0.y, p1.y) < -Lmax || Math.min(p0.y, p1.y) > h + Lmax) return;
+      const dx = p1.x - p0.x, dy = p1.y - p0.y, len = Math.hypot(dx, dy);
+      if (len < 1.5) return;
+      const ux = dx / len, uy = dy / len, nx = -uy, ny = ux;          // nx, ny: towards the sea (right-hand side)
+      const s0 = [p0.x + ux * len * 0.08, p0.y + uy * len * 0.08], s1 = [p1.x - ux * len * 0.08, p1.y - uy * len * 0.08];
+      const v = a["avg_" + m], n = a["n_" + m] || 0, tested = a["t_" + m] || 0;
+      const L = (v !== null && v !== undefined) ? Math.max(2, v / maxV * Lmax) : 4;
+      const d = "M" + s0 + "L" + s1 + "L" + [s1[0] + nx * L, s1[1] + ny * L] + "L" + [s0[0] + nx * L, s0[1] + ny * L] + "Z";
+      const has = v !== null && v !== undefined;
+      const bar = el("path", { d: d, fill: has ? streamColor(a.stream_km) : "#ffffff",
+                               stroke: has ? "#ffffff" : "#8c8c8c", "stroke-width": has ? 0.5 : 0.8,
+                               "stroke-dasharray": has ? "" : "2,2", class: "hit" }, g);
+      const where = "Coast km " + Math.round(a.km_from) + "-" + Math.round(a.km_to) + ": " + a.n_samples +
+        (a.n_samples === 1 ? " river sample" : " river samples") + " (" + a.n_mouths + (a.n_mouths === 1 ? " river mouth" : " river mouths") +
+        "), upstream streams " + Math.round(a.stream_km).toLocaleString() + " km. ";
+      const what = has ? label + " average " + fmt(v) + " ng/L (" + n + " of " + tested + " tested samples with a measured value)"
+                       : (tested ? label + ": not detected in any of the " + tested + " tested samples (ND)"
+                                 : label + ": not measured in these samples");
+      hover(bar, where + what);
+    });
+    const key = document.getElementById("coast-key");
+    key.innerHTML = "Bar length: " + label + " average (longest = " + fmt(maxV) + " ng/L). Dashed stub = ND or not measured." +
+      "<div>Bar color: upstream stream length</div><div class='ramp'>" +
+      STREAM_COLORS.map(function (c) { return "<span style='background:" + c + "'></span>"; }).join("") +
+      "</div><div class='ticks'>" + STREAM_LABELS.map(function (s) { return "<span>" + s + "</span>"; }).join("") + "</div>";
   }
 
   function setupTracing(map) {
@@ -257,6 +374,7 @@ require([
     const w = view.width, h = view.height;
     svg.setAttribute("viewBox", "0 0 " + w + " " + h);
     while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (coastOn) drawCoast(w, h);
     if (!lensOn) {
       document.getElementById("count").textContent = "Lens off: " + samples.length.toLocaleString() + " samples on the map";
       return;

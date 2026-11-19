@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PFAS Lens View</title>
+<!--
+  Circular lens view for the PFAS Monitoring Dashboard.
+  This page holds no sample data. It signs the viewer in to ArcGIS Online and reads the private
+  Bowden-lab sample layer with the viewer's own permissions, so only people who can already
+  open that layer see any samples.
+-->
+<link rel="stylesheet" href="https://js.arcgis.com/4.31/esri/themes/light/main.css">
+<style>
+  :root {
+    --ink: #1f2933;
+    --muted: #5b6670;
+    --paper: #ffffff;
+    --ring: #ffffff;
+    --veil: rgba(255, 255, 255, 0.55);
+    --line: #2b2b2b;
+  }
+  html, body { margin: 0; height: 100%; background: #f4f4f2; color: var(--ink);
+    font-family: "Avenir Next", "Segoe UI", Arial, sans-serif; }
+  #view { position: absolute; inset: 0; }
+  #lens { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+  #lens .hit { pointer-events: auto; cursor: pointer; }
+  #card { position: absolute; top: 12px; left: 12px; max-width: 270px; background: var(--paper);
+    border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); padding: 10px 12px; font-size: 12.5px; line-height: 1.35; }
+  #card h1 { font-size: 15px; margin: 0 0 4px; }
+  #card p { margin: 4px 0; color: var(--muted); }
+  #card .count { color: var(--ink); font-weight: 600; }
+  #lens-toggle { margin-top: 6px; font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 4px;
+    border: 1px solid #23395B; background: #23395B; color: #fff; cursor: pointer; }
+  #lens-toggle[aria-pressed="false"] { background: #fff; color: #23395B; }
+  #signin { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(244,244,242,.92); z-index: 5; }
+  #signin .box { background: var(--paper); padding: 18px 20px; border-radius: 6px; max-width: 320px;
+    box-shadow: 0 1px 6px rgba(0,0,0,.25); font-size: 13px; text-align: center; }
+  #signin button { margin-top: 10px; font: inherit; padding: 7px 14px; border: 0; border-radius: 4px;
+    background: #23395B; color: #fff; cursor: pointer; }
+  #signin a { display: block; margin-top: 8px; color: #23395B; font-size: 12px; }
+  #status { position: absolute; bottom: 10px; left: 12px; font-size: 11px; color: var(--muted);
+    background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 3px; }
+  #tip { position: absolute; pointer-events: none; background: #fff; border: 1px solid #ccc;
+    border-radius: 3px; padding: 3px 6px; font-size: 12px; display: none; z-index: 4; }
+  @media (max-width: 520px) { #card { max-width: 190px; font-size: 11.5px; } }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<svg id="lens" aria-label="Lens with charts of the samples inside it"></svg>
+<div id="card">
+  <h1>PFAS samples: lens view</h1>
+  <p class="count" id="count">Loading samples…</p>
+  <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
+  <button id="lens-toggle" type="button" aria-pressed="false">Turn lens on</button>
+</div>
+<div id="tip"></div>
+<div id="status"></div>
+<div id="signin"><div class="box">
+  <div>This view reads private PFAS samples. Sign in with your ArcGIS Online account to see them.</div>
+  <button id="signin-btn" type="button">Sign in</button>
+  <a href="./?redirect=1" target="_blank" rel="noopener">Sign-in blocked? Open in a new tab</a>
+</div></div>
+
+<script src="https://js.arcgis.com/4.31/"></script>
+<script>
+require([
+  "esri/identity/OAuthInfo", "esri/identity/IdentityManager", "esri/WebMap", "esri/views/MapView",
+  "esri/core/reactiveUtils", "esri/geometry/support/webMercatorUtils"
+], function (OAuthInfo, esriId, WebMap, MapView, reactiveUtils, webMercatorUtils) {
+
+  // ---- settings -------------------------------------------------------------------------------
+  const PORTAL = "https://virginiatech.maps.arcgis.com";
+  const APP_ID = "fdstTlFZB2rF4OYA";                       // OAuth client ID (not a secret)
+  const WEBMAP_ID = "a30820ec0dc544fcb9eadaaee6017f77";    // PFAS Monitoring Map (private)
+  const SAMPLE_LAYER_TITLE = "Sample water-body type";      // layer whose samples the lens counts
+  const WB_ORDER = ["Estuary/bay/coastal", "Lake/pond/reservoir", "River/stream", "Canal/ditch",
+                    "Swamp/marsh", "Uncertain", "Offshore (Gulf)"];
+  const WB_COLOR = { "Estuary/bay/coastal": "#7B3FA0", "Lake/pond/reservoir": "#2E9E5B",
+    "River/stream": "#1F5FBF", "Canal/ditch": "#13A3A3", "Swamp/marsh": "#9CA23B",
+    "Uncertain": "#A8A8A8", "Offshore (Gulf)": "#5A6670" };
+  const PFAS = ["PFBA", "PFPeA", "PFHxA", "PFHpA", "PFOA", "PFNA", "PFDA", "PFUdA", "PFDoA",
+                "PFPrS", "PFBS", "PFPeS", "PFHxS", "PFOS", "PFECHS", "FTS_4_2", "NEtFOSAA"];
+  const PFAS_LABEL = { FTS_4_2: "4:2 FTS" };
+  const PFAS_COLOR = "#1A9BC9";
+  // charts: angles in degrees, 0 = straight up, clockwise
+  const CHARTS = [
+    { key: "wb", flag: "WATER-BODY TYPE", flagAngle: 196, flagColor: "#23395B", from: -128, to: -12, open: true },
+    { key: "pfas", flag: "PFAS AVERAGE (ng/L)", flagAngle: 164, flagColor: "#1A9BC9", from: 12, to: 150, open: true }
+  ];
+
+  // ---- sign-in --------------------------------------------------------------------------------
+  // Inside the dashboard the page sits in a frame, so sign-in opens a small window (popup). Opened in its own tab
+  // with ?redirect=1, the whole tab goes to the ArcGIS sign-in page and comes back.
+  const usePopup = !new URLSearchParams(location.search).has("redirect");
+  const info = new OAuthInfo({ appId: APP_ID, portalUrl: PORTAL, popup: usePopup,
+                               popupCallbackUrl: new URL("oauth-callback.html", location.href).href });
+  esriId.registerOAuthInfos([info]);
+  const gate = document.getElementById("signin");
+  esriId.checkSignInStatus(PORTAL + "/sharing").then(start).catch(function () {
+    gate.style.display = "flex";
+    document.getElementById("signin-btn").onclick = function () {
+      esriId.getCredential(PORTAL + "/sharing").then(function () { gate.style.display = "none"; start(); })
+        .catch(function (e) { setStatus("Sign-in did not finish: " + e.message); });
+    };
+  });
+
+  // ---- map and data ---------------------------------------------------------------------------
+  let view, samples = [], lensOn = false;   // the lens starts turned off
+  const toggle = document.getElementById("lens-toggle");
+  toggle.addEventListener("click", function () {
+    lensOn = !lensOn;
+    toggle.setAttribute("aria-pressed", String(lensOn));
+    toggle.textContent = lensOn ? "Turn lens off" : "Turn lens on";
+    draw();
+  });
+  const svg = document.getElementById("lens");
+  const NS = "http://www.w3.org/2000/svg";
+
+  function setStatus(t) { document.getElementById("status").textContent = t; }
+
+  function start() {
+    const map = new WebMap({ portalItem: { id: WEBMAP_ID, portal: { url: PORTAL } } });
+    view = new MapView({ container: "view", map: map, constraints: { snapToZoom: false },
+                         popupEnabled: false, ui: { components: ["zoom", "attribution"] } });
+    view.when(async function () {
+      const layer = map.allLayers.find(function (l) { return l.title === SAMPLE_LAYER_TITLE; });
+      if (!layer) { setStatus("Sample layer not found in the web map."); return; }
+      await layer.load();
+      const names = layer.fields.map(function (f) { return f.name; });
+      const pick = function (n) { return names.find(function (x) { return x.toLowerCase() === n.toLowerCase(); }); };
+      const wbField = pick("wb_class");
+      const pf = PFAS.map(function (p) { return { key: p, field: pick(p) }; }).filter(function (p) { return p.field; });
+      const outFields = [wbField].concat(pf.map(function (p) { return p.field; }));
+      // read every sample, page by page (the service returns at most maxRecordCount per request)
+      const page = layer.capabilities.query.maxRecordCount || 1000;
+      const total = await layer.queryFeatureCount({ where: "1=1" });
+      for (let start = 0; start < total; start += page) {
+        const q = layer.createQuery();
+        q.where = "1=1"; q.outFields = outFields; q.returnGeometry = true;
+        q.outSpatialReference = view.spatialReference; q.start = start; q.num = page;
+        const res = await layer.queryFeatures(q);
+        res.features.forEach(function (g) {
+          const vals = {};
+          pf.forEach(function (p) { const v = g.attributes[p.field]; vals[p.key] = (v === null || v === undefined) ? null : +v; });
+          samples.push({ geom: g.geometry, wb: g.attributes[wbField] || "Uncertain", pfas: vals });
+        });
+      }
+      setStatus(samples.length.toLocaleString() + " samples loaded. PFAS bars: average ng/L of the samples in the lens with a measured value; not detected is left out, never 0.");
+      draw();
+      reactiveUtils.watch(function () { return [view.extent, view.width, view.height]; }, schedule);
+    });
+  }
+
+  let pending = false;
+  function schedule() { if (!pending) { pending = true; requestAnimationFrame(function () { pending = false; draw(); }); } }
+
+  // ---- drawing --------------------------------------------------------------------------------
+  function el(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  function pt(cx, cy, r, deg) { const a = deg * Math.PI / 180; return [cx + r * Math.sin(a), cy - r * Math.cos(a)]; }
+  function wedge(cx, cy, r0, r1, a0, a1) {
+    const p1 = pt(cx, cy, r0, a0), p2 = pt(cx, cy, r1, a0), p3 = pt(cx, cy, r1, a1), p4 = pt(cx, cy, r0, a1);
+    const large = (a1 - a0) > 180 ? 1 : 0;
+    return "M" + p1 + "L" + p2 + "A" + r1 + "," + r1 + " 0 " + large + " 1 " + p3 + "L" + p4 +
+           "A" + r0 + "," + r0 + " 0 " + large + " 0 " + p1 + "Z";
+  }
+  function fmt(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + "k" : (v >= 10 ? v.toFixed(0) : v.toFixed(1)); }
+  const tip = document.getElementById("tip");
+  function hover(node, text) {
+    node.addEventListener("mousemove", function (e) { tip.style.display = "block"; tip.textContent = text;
+      tip.style.left = (e.clientX + 12) + "px"; tip.style.top = (e.clientY + 12) + "px"; });
+    node.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+  }
+
+  function draw() {
+    if (!view) return;
+    const w = view.width, h = view.height;
+    svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!lensOn) {
+      document.getElementById("count").textContent = "Lens off: " + samples.length.toLocaleString() + " samples on the map";
+      return;
+    }
+    const cx = w / 2, cy = h / 2 + Math.min(w, h) * 0.06;
+    const R = Math.max(60, Math.min(w, h) * 0.17), band = 20, r0 = R + band + 3;
+    const Lmax = Math.max(50, Math.min(w, h) * 0.22);
+
+    // samples inside the lens
+    const inside = samples.filter(function (s) {
+      const p = view.toScreen(s.geom); if (!p) return false;
+      const dx = p.x - cx, dy = p.y - cy; return dx * dx + dy * dy <= R * R;
+    });
+
+    // veil outside the lens, white ring, ring text
+    el("path", { d: "M0,0H" + w + "V" + h + "H0Z M" + (cx - R) + "," + cy + "a" + R + "," + R + " 0 1 0 " + (2 * R) + ",0a" + R + "," + R + " 0 1 0 " + (-2 * R) + ",0Z",
+                 fill: "var(--veil)", "fill-rule": "evenodd" }, svg);
+    el("circle", { cx: cx, cy: cy, r: R + band / 2, fill: "none", stroke: "var(--ring)", "stroke-width": band }, svg);
+    el("circle", { cx: cx, cy: cy, r: R, fill: "none", stroke: "var(--line)", "stroke-width": 1.2 }, svg);
+    el("circle", { cx: cx, cy: cy, r: R + band, fill: "none", stroke: "var(--line)", "stroke-width": 1.2 }, svg);
+    const defs = el("defs", {}, svg);
+    const top = pt(cx, cy, R + band / 2 - 4, -90), top2 = pt(cx, cy, R + band / 2 - 4, 90);
+    el("path", { id: "ringpath", d: "M" + top + "A" + (R + band / 2 - 4) + "," + (R + band / 2 - 4) + " 0 0 1 " + top2, fill: "none" }, defs);
+    const t = el("text", { "font-size": 12, "font-weight": 600, fill: "var(--ink)" }, svg);
+    const tp = el("textPath", { href: "#ringpath", startOffset: "50%", "text-anchor": "middle" }, t);
+    tp.textContent = inside.length.toLocaleString() + (inside.length === 1 ? " sample" : " samples") + " in the lens";
+    document.getElementById("count").textContent = inside.length.toLocaleString() + " of " + samples.length.toLocaleString() + " samples in the lens";
+
+    CHARTS.forEach(function (c) {
+      if (c.open) {
+        let items;
+        if (c.key === "wb") {
+          items = WB_ORDER.map(function (k) { return { label: k, value: inside.filter(function (s) { return s.wb === k; }).length, color: WB_COLOR[k], unit: "samples" }; });
+        } else {
+          items = PFAS.map(function (k) {
+            // average of the samples in the lens that have a measured value; not detected is left out, never 0
+            let sum = 0, n = 0;
+            inside.forEach(function (s) { const v = s.pfas[k]; if (v !== null && v !== undefined && !isNaN(v)) { sum += v; n += 1; } });
+            return { label: PFAS_LABEL[k] || k, value: n ? sum / n : 0, n: n, color: PFAS_COLOR, unit: "ng/L" };
+          });
+        }
+        radialBars(cx, cy, r0, Lmax, c, items);
+      }
+      flag(cx, cy, R + band, c);
+    });
+  }
+
+  function radialBars(cx, cy, r0, Lmax, c, items) {
+    const g = el("g", {}, svg);
+    const n = items.length, step = (c.to - c.from) / n, maxV = Math.max.apply(null, items.map(function (d) { return d.value; })) || 1;
+    // faint guide arc at the full bar length
+    const a = pt(cx, cy, r0 + Lmax, c.from), b = pt(cx, cy, r0 + Lmax, c.to);
+    el("path", { d: "M" + a + "A" + (r0 + Lmax) + "," + (r0 + Lmax) + " 0 0 1 " + b, fill: "none", stroke: "#8a8a8a",
+                 "stroke-dasharray": "2,3", "stroke-width": 0.8 }, g);
+    items.forEach(function (d, i) {
+      const mid = c.from + step * (i + 0.5), half = step * 0.36;
+      const L = d.value > 0 ? Math.max(2, d.value / maxV * Lmax) : 0;
+      if (L > 0) {
+        const bar = el("path", { d: wedge(cx, cy, r0, r0 + L, mid - half, mid + half), fill: d.color, stroke: "#fff", "stroke-width": 0.6, class: "hit" }, g);
+        hover(bar, d.label + ": " + (d.unit === "ng/L" ? (d.n ? fmt(d.value) + " ng/L average of " + d.n + (d.n === 1 ? " sample" : " samples") + " with a measured value" : "not detected in any sample in the lens") : d.value + " samples"));
+      }
+      // label beyond the bar end, reading outward
+      const r = r0 + L + 5, p = pt(cx, cy, r, mid);
+      const right = mid >= 0;
+      const rot = right ? mid - 90 : mid + 90;
+      const txt = el("text", { x: p[0], y: p[1], "font-size": 11, fill: "var(--ink)", "dominant-baseline": "middle",
+                               "text-anchor": right ? "start" : "end", transform: "rotate(" + rot + " " + p[0] + " " + p[1] + ")",
+                               "paint-order": "stroke", stroke: "rgba(255,255,255,.85)", "stroke-width": 3 }, g);
+      txt.textContent = (right ? d.label + "  " + (d.unit === "ng/L" ? fmt(d.value) : d.value)
+                               : (d.unit === "ng/L" ? fmt(d.value) : d.value) + "  " + d.label);
+    });
+  }
+
+  function flag(cx, cy, rStart, c) {
+    const len = 128, wid = 24;
+    const g = el("g", { transform: "rotate(" + c.flagAngle + " " + cx + " " + cy + ")", class: "hit" }, svg);
+    const x = cx - wid / 2, y = cy - rStart - len;
+    el("path", { d: "M" + x + "," + (cy - rStart) + "V" + y + "l" + wid / 2 + ",-9l" + wid / 2 + ",9V" + (cy - rStart) + "Z",
+                 fill: c.open ? c.flagColor : "#ffffff", stroke: c.flagColor, "stroke-width": 1.4 }, g);
+    const tx = cx, ty = y + len / 2;
+    const flip = c.flagAngle > 90 && c.flagAngle < 270;
+    const tt = el("text", { x: tx, y: ty, "font-size": 11.5, "font-weight": 700, "letter-spacing": "0.06em",
+                            fill: c.open ? "#ffffff" : c.flagColor, "text-anchor": "middle", "dominant-baseline": "middle",
+                            transform: "rotate(" + (flip ? 90 : -90) + " " + tx + " " + ty + ")" }, g);
+    tt.textContent = c.flag;
+    g.addEventListener("click", function () { c.open = !c.open; draw(); });
+    hover(g, (c.open ? "Close" : "Open") + " the " + c.flag.toLowerCase() + " chart");
+  }
+});
+</script>
+</body>
+</html>

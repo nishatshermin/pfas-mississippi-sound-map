@@ -432,7 +432,7 @@ require([
     // overlap at a small scale. Bars are placed longest stream first; a bar that would overlap one already placed is
     // hidden at this zoom (a small dot marks its spot) and comes back once zooming in gives it room.
     bars.sort(function (u, v) { return v.gr.stream - u.gr.stream; });
-    const placed = [];
+    const placed = [], labelled = [];
     let hidden = 0;
     bars.forEach(function (bar) {
       const q = shrink(bar.quad, 0.6);
@@ -450,19 +450,52 @@ require([
       const path = el("path", { d: d, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR,
                                 stroke: isSel ? "#111827" : "rgba(255,255,255,0.9)", "stroke-width": isSel ? 2.2 : 0.5,
                                 class: "hit" }, g);
-      const kmText = "coast km " + Math.round(i * bin) + "-" + Math.round((i + 1) * bin);
       path.addEventListener("click", function (e) {
         e.stopPropagation();
         tip.style.display = "none";
         selectSamples(gr.sids.slice(), "Showing the " + gr.n + (gr.n === 1 ? " river sample" : " river samples") +
-          " of the bar at " + kmText + " and every stream upstream of them.");
+          " of this bar and every stream upstream of them.");
       });
-      hover(path, gr.n +
-        (gr.n === 1 ? " river sample" : " river samples") + " (" + gr.mouths.size + (gr.mouths.size === 1 ? " river mouth" : " river mouths") +
-        "). Upstream streams " + Math.round(gr.stream).toLocaleString() + " km. " +
-        (bar.has ? label + " average " + fmt(bar.avg) + " ng/L (" + gr.nv + " of " + gr.n + " samples with a measured value)"
-                 : label + ": not detected or not measured in these samples (ND)") +
-        ". Click to show its streams and samples.");
+      hover(path, gr.n + (gr.n === 1 ? " river sample, " : " river samples, ") + gr.mouths.size +
+        (gr.mouths.size === 1 ? " river mouth" : " river mouths"));
+      labelled.push({ bar: bar, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR });
+    });
+    // Labels, drawn after all bars so no bar covers them: upstream stream length just past the top of each bar, and
+    // the PFAS average inside the bar along its length. A label that does not fit, or would collide with one
+    // already drawn, is left out at this zoom (zoom in for more).
+    const boxes = [];
+    const fits = function (bx) {
+      if (boxes.some(function (o) { return bx.x0 < o.x1 && bx.x1 > o.x0 && bx.y0 < o.y1 && bx.y1 > o.y0; })) return false;
+      boxes.push(bx); return true;
+    };
+    labelled.forEach(function (it) {
+      const qd = it.bar.quad, A = qd[0], C = qd[1], T = qd[3];
+      const L = Math.hypot(T[0] - A[0], T[1] - A[1]), W = Math.hypot(C[0] - A[0], C[1] - A[1]);
+      if (L < 1) return;
+      const ux = (T[0] - A[0]) / L, uy = (T[1] - A[1]) / L;
+      // inside: PFAS average with its unit, rotated along the bar and kept upright
+      const inside = it.bar.has ? fmt(it.bar.avg) + " ng/L" : "ND";
+      const fs = Math.min(11, W * 0.75);
+      if (fs >= 7 && inside.length * fs * 0.58 + 6 <= L) {
+        let ang = Math.atan2(uy, ux) * 180 / Math.PI;
+        if (ang > 90) ang -= 180; else if (ang < -90) ang += 180;
+        const cx = (A[0] + C[0]) / 2 + ux * L / 2, cy = (A[1] + C[1]) / 2 + uy * L / 2;
+        const rgb = (it.fill.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+        const dark = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] < 150;
+        const tx = el("text", { x: cx, y: cy, "font-size": fs, "font-weight": 600, fill: dark ? "#ffffff" : "#1f2933",
+                                "text-anchor": "middle", "dominant-baseline": "central",
+                                transform: "rotate(" + ang.toFixed(1) + " " + cx.toFixed(1) + " " + cy.toFixed(1) + ")" }, g);
+        tx.textContent = inside;
+      }
+      // top: upstream stream length with its unit, just past the bar's end
+      const top = kmLabel(it.bar.gr.stream), tw = top.length * 6.2, th = 12;
+      const px = (T[0] + qd[2][0]) / 2 + ux * 5, py = (T[1] + qd[2][1]) / 2 + uy * 5;
+      const ax = ux > 0.35 ? 0 : ux < -0.35 ? -tw : -tw / 2, ay = uy > 0.35 ? 0 : uy < -0.35 ? -th : -th / 2;
+      if (!fits({ x0: px + ax, x1: px + ax + tw, y0: py + ay, y1: py + ay + th })) return;
+      const tt = el("text", { x: px + ax, y: py + ay + th / 2, "font-size": 10.5, fill: "#1f2933", "font-weight": 600,
+                              "dominant-baseline": "central", "paint-order": "stroke", stroke: "rgba(255,255,255,0.9)",
+                              "stroke-width": 3 }, g);
+      tt.textContent = top;
     });
     // key in the card
     const stops = [0, 1 / 3, 2 / 3, 1];

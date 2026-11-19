@@ -76,6 +76,8 @@ require([
   const APP_ID = "fdstTlFZB2rF4OYA";                       // OAuth client ID (not a secret)
   const WEBMAP_ID = "a30820ec0dc544fcb9eadaaee6017f77";    // PFAS Monitoring Map (private)
   const SAMPLE_LAYER_TITLE = "Sample water-body type";      // layer whose samples the lens counts
+  // In the dashboard this layer is only drawn after a sample is clicked; here it would show every network at once.
+  const HIDE_LAYERS = ["Upstream streams (could drain to the selected sample)"];
   const WB_ORDER = ["Estuary/bay/coastal", "Lake/pond/reservoir", "River/stream", "Canal/ditch",
                     "Swamp/marsh", "Uncertain", "Offshore (Gulf)"];
   const WB_COLOR = { "Estuary/bay/coastal": "#7B3FA0", "Lake/pond/reservoir": "#2E9E5B",
@@ -99,13 +101,14 @@ require([
                                popupCallbackUrl: new URL("oauth-callback.html", location.href).href });
   esriId.registerOAuthInfos([info]);
   const gate = document.getElementById("signin");
-  esriId.checkSignInStatus(PORTAL + "/sharing").then(start).catch(function () {
-    gate.style.display = "flex";
-    document.getElementById("signin-btn").onclick = function () {
-      esriId.getCredential(PORTAL + "/sharing").then(function () { gate.style.display = "none"; start(); })
-        .catch(function (e) { setStatus("Sign-in did not finish: " + e.message); });
-    };
-  });
+  // Not signed in yet: ArcGIS shows its own one-click sign-in prompt. If that is cancelled, a fallback panel
+  // offers to try again or to open the page in its own tab.
+  function signIn() {
+    esriId.getCredential(PORTAL + "/sharing").then(function () { gate.style.display = "none"; start(); })
+      .catch(function (e) { gate.style.display = "flex"; setStatus("Sign-in did not finish: " + e.message); });
+  }
+  document.getElementById("signin-btn").onclick = function () { gate.style.display = "none"; signIn(); };
+  esriId.checkSignInStatus(PORTAL + "/sharing").then(start).catch(signIn);
 
   // ---- map and data ---------------------------------------------------------------------------
   let view, samples = [], lensOn = false;   // the lens starts turned off
@@ -126,6 +129,7 @@ require([
     view = new MapView({ container: "view", map: map, constraints: { snapToZoom: false },
                          popupEnabled: false, ui: { components: ["zoom", "attribution"] } });
     view.when(async function () {
+      map.allLayers.forEach(function (l) { if (HIDE_LAYERS.indexOf(l.title) >= 0) l.visible = false; });
       const layer = map.allLayers.find(function (l) { return l.title === SAMPLE_LAYER_TITLE; });
       if (!layer) { setStatus("Sample layer not found in the web map."); return; }
       await layer.load();

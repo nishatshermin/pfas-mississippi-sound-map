@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PFAS Lens View</title>
+<title>PFAS Monitoring Map</title>
 <!--
-  Circular lens view for the PFAS Monitoring Dashboard.
+  Main map of the PFAS Monitoring Dashboard, with an optional circular lens (charts around a circle).
   This page holds no sample data. It signs the viewer in to ArcGIS Online and reads the private
   Bowden-lab sample layer with the viewer's own permissions, so only people who can already
   open that layer see any samples.
@@ -40,8 +40,13 @@
   #signin button { margin-top: 10px; font: inherit; padding: 7px 14px; border: 0; border-radius: 4px;
     background: #23395B; color: #fff; cursor: pointer; }
   #signin a { display: block; margin-top: 8px; color: #23395B; font-size: 12px; }
-  #status { position: absolute; bottom: 10px; left: 12px; font-size: 11px; color: var(--muted);
-    background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 3px; }
+  #card #status { font-size: 11px; margin-top: 6px; }
+  #legend-panel { position: absolute; right: 12px; bottom: 26px; width: 250px; max-height: 46%; overflow: auto;
+    background: var(--paper); border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); z-index: 3; }
+  #legend-panel h2 { font-size: 12.5px; margin: 0; padding: 7px 10px 2px; position: sticky; top: 0; background: var(--paper); z-index: 1; }
+  #legend-panel .esri-legend { background: transparent; padding: 0 2px 6px; font-size: 11.5px; }
+  #legend-panel .esri-legend__service { padding: 4px 8px; }
+  @media (max-width: 700px) { #legend-panel { width: 180px; max-height: 34%; } }
   #tip { position: absolute; pointer-events: none; background: #fff; border: 1px solid #ccc;
     border-radius: 3px; padding: 3px 6px; font-size: 12px; display: none; z-index: 4; }
   @media (max-width: 520px) { #card { max-width: 190px; font-size: 11.5px; } }
@@ -53,11 +58,13 @@
 <div id="card">
   <h1>PFAS samples: lens view</h1>
   <p class="count" id="count">Loading samples…</p>
+  <p>Click a river/stream sample to show every stream that could drain to it; click an empty spot to clear.</p>
   <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
   <button id="lens-toggle" type="button" aria-pressed="false">Turn lens on</button>
+  <p id="status"></p>
 </div>
+<div id="legend-panel" aria-label="Legend"><h2>Legend</h2><div id="legend"></div></div>
 <div id="tip"></div>
-<div id="status"></div>
 <div id="signin"><div class="box">
   <div>This view reads private PFAS samples. Sign in with your ArcGIS Online account to see them.</div>
   <button id="signin-btn" type="button">Sign in</button>
@@ -68,16 +75,21 @@
 <script>
 require([
   "esri/identity/OAuthInfo", "esri/identity/IdentityManager", "esri/WebMap", "esri/views/MapView",
-  "esri/core/reactiveUtils", "esri/geometry/support/webMercatorUtils"
-], function (OAuthInfo, esriId, WebMap, MapView, reactiveUtils, webMercatorUtils) {
+  "esri/core/reactiveUtils", "esri/widgets/Legend", "esri/widgets/LayerList", "esri/widgets/Expand",
+  "esri/widgets/ScaleBar", "esri/widgets/Home"
+], function (OAuthInfo, esriId, WebMap, MapView, reactiveUtils, Legend, LayerList, Expand, ScaleBar, Home) {
 
   // ---- settings -------------------------------------------------------------------------------
   const PORTAL = "https://virginiatech.maps.arcgis.com";
   const APP_ID = "fdstTlFZB2rF4OYA";                       // OAuth client ID (not a secret)
   const WEBMAP_ID = "a30820ec0dc544fcb9eadaaee6017f77";    // PFAS Monitoring Map (private)
   const SAMPLE_LAYER_TITLE = "Sample water-body type";      // layer whose samples the lens counts
-  // In the dashboard this layer is only drawn after a sample is clicked; here it would show every network at once.
-  const HIDE_LAYERS = ["Upstream streams (could drain to the selected sample)"];
+  // Click-to-trace, as the dashboard did it: clicking a river sample filters the upstream layer to that sample's
+  // network (net_id) and the water-body sample layer to that one sample (SampleID). The upstream layer draws nothing
+  // until a sample is clicked.
+  const RIVER_LAYER_TITLE = "River/stream samples (click to trace upstream)";
+  const UPSTREAM_LAYER_TITLE = "Upstream streams (could drain to the selected sample)";
+  const NOTHING = "1=0";
   const WB_ORDER = ["Estuary/bay/coastal", "Lake/pond/reservoir", "River/stream", "Canal/ditch",
                     "Swamp/marsh", "Uncertain", "Offshore (Gulf)"];
   const WB_COLOR = { "Estuary/bay/coastal": "#7B3FA0", "Lake/pond/reservoir": "#2E9E5B",
@@ -127,9 +139,24 @@ require([
   function start() {
     const map = new WebMap({ portalItem: { id: WEBMAP_ID, portal: { url: PORTAL } } });
     view = new MapView({ container: "view", map: map, constraints: { snapToZoom: false },
-                         popupEnabled: false, ui: { components: ["zoom", "attribution"] } });
+                         popupEnabled: true, ui: { components: ["attribution"] } });
     view.when(async function () {
-      map.allLayers.forEach(function (l) { if (HIDE_LAYERS.indexOf(l.title) >= 0) l.visible = false; });
+      // map tools: layer list (turn layers on and off), zoom, home, scale bar. The legend panel is always shown and
+      // lists only the layers that are visible.
+      const layerList = new LayerList({ view: view });
+      view.ui.add(new Expand({ view: view, content: layerList, expandTooltip: "Layers (turn on and off)",
+                               expanded: false }), "top-right");
+      view.ui.add("zoom", "top-right");
+      view.ui.add(new Home({ view: view }), "top-right");
+      view.ui.add(new ScaleBar({ view: view, style: "line", unit: "imperial" }), "bottom-left");
+      new Legend({ view: view, container: "legend", respectLayerVisibility: true });
+
+      // first open: only point layers are drawn (as the web map sets them); every line layer starts off
+      const plain = map.allLayers.filter(function (l) { return l.type !== "group"; });
+      await Promise.all(plain.map(function (l) { return l.load().catch(function () {}); }).toArray());
+      plain.forEach(function (l) { if (!(l.type === "feature" && l.geometryType === "point")) l.visible = false; });
+
+      setupTracing(map);
       const layer = map.allLayers.find(function (l) { return l.title === SAMPLE_LAYER_TITLE; });
       if (!layer) { setStatus("Sample layer not found in the web map."); return; }
       await layer.load();
@@ -155,6 +182,38 @@ require([
       setStatus(samples.length.toLocaleString() + " samples loaded. PFAS bars: average ng/L of the samples in the lens with a measured value; not detected is left out, never 0.");
       draw();
       reactiveUtils.watch(function () { return [view.extent, view.width, view.height]; }, schedule);
+    });
+  }
+
+  function setupTracing(map) {
+    const river = map.allLayers.find(function (l) { return l.title === RIVER_LAYER_TITLE; });
+    const up = map.allLayers.find(function (l) { return l.title === UPSTREAM_LAYER_TITLE; });
+    const wb = map.allLayers.find(function (l) { return l.title === SAMPLE_LAYER_TITLE; });
+    if (!river || !up || !wb) { setStatus("Upstream tracing layers not found in the web map."); return; }
+    const field = function (layer, n) {
+      return (layer.fields || []).map(function (f) { return f.name; })
+        .find(function (x) { return x.toLowerCase() === n.toLowerCase(); }) || n;
+    };
+    const netRiver = field(river, "net_id"), sidRiver = field(river, "SampleID");
+    const netUp = field(up, "net_id"), sidWb = field(wb, "SampleID");
+    river.outFields = [netRiver, sidRiver];
+    const wbStart = wb.definitionExpression || null;
+    const quote = function (s) { return "'" + String(s).split("'").join("''") + "'"; };
+    up.definitionExpression = NOTHING;
+    function clear() { up.definitionExpression = NOTHING; wb.definitionExpression = wbStart; }
+    view.on("click", function (event) {
+      view.hitTest(event).then(function (res) {
+        const hits = res.results.filter(function (r) { return r.graphic && r.graphic.layer; });
+        const hit = hits.find(function (r) { return r.graphic.layer === river; });
+        if (hit) {
+          const a = hit.graphic.attributes;
+          up.definitionExpression = a[netRiver] ? netUp + " = " + quote(a[netRiver]) : NOTHING;
+          up.visible = true;
+          wb.definitionExpression = sidWb + " = " + quote(a[sidRiver]);
+        } else if (!hits.length) {
+          clear();
+        }
+      });
     });
   }
 

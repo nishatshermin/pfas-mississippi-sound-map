@@ -457,7 +457,8 @@ require([
           " of this bar and every stream upstream of them.");
       });
       hover(path, gr.n + (gr.n === 1 ? " river sample, " : " river samples, ") + gr.mouths.size +
-        (gr.mouths.size === 1 ? " river mouth" : " river mouths"));
+        (gr.mouths.size === 1 ? " river mouth, " : " river mouths, ") + Math.round(gr.stream).toLocaleString() +
+        " km of upstream streams");
       labelled.push({ bar: bar, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR });
     });
     // Labels, drawn after all bars so no bar covers them: upstream stream length just past the top of each bar, and
@@ -468,6 +469,9 @@ require([
       if (boxes.some(function (o) { return bx.x0 < o.x1 && bx.x1 > o.x0 && bx.y0 < o.y1 && bx.y1 > o.y0; })) return false;
       boxes.push(bx); return true;
     };
+    // stream-length labels only on the 10 bars with the longest upstream streams on screen
+    const top10 = new Set(labelled.slice().sort(function (u, v) { return v.bar.gr.stream - u.bar.gr.stream; })
+      .slice(0, 10).map(function (it) { return it.bar; }));
     labelled.forEach(function (it) {
       const qd = it.bar.quad, A = qd[0], C = qd[1], T = qd[3];
       const L = Math.hypot(T[0] - A[0], T[1] - A[1]), W = Math.hypot(C[0] - A[0], C[1] - A[1]);
@@ -487,7 +491,8 @@ require([
                                 transform: "rotate(" + ang.toFixed(1) + " " + cx.toFixed(1) + " " + cy.toFixed(1) + ")" }, g);
         tx.textContent = inside;
       }
-      // top: upstream stream length with its unit, just past the bar's end
+      // top: upstream stream length with its unit, just past the bar's end (top 10 bars only)
+      if (!top10.has(it.bar)) return;
       const top = kmLabel(it.bar.gr.stream), tw = top.length * 6.2, th = 12;
       const px = (T[0] + qd[2][0]) / 2 + ux * 5, py = (T[1] + qd[2][1]) / 2 + uy * 5;
       const ax = ux > 0.35 ? 0 : ux < -0.35 ? -tw : -tw / 2, ay = uy > 0.35 ? 0 : uy < -0.35 ? -th : -th / 2;
@@ -503,10 +508,14 @@ require([
       "Bar length: upstream stream length (log scale; dashed lines at 10, 100, 1,000 km and so on). Stretch size now " + bin + " km." +
       (hidden ? " " + hidden + (hidden === 1 ? " bar is" : " bars are") + " hidden to avoid overlap (white dots); zoom in to see " +
                 (hidden === 1 ? "it." : "them.") : "") +
-      "<div style='margin-top:4px'>Bar color: " + label + " average, ng/L</div><div class='ramp'>" +
-      stops.map(function (f) { return "<span style='background:" + barColor(f, 1) + "'></span>"; }).join("") +
-      "<span style='background:" + ND_COLOR + ";flex:0.6'></span></div><div class='ticks'><span>" + fmt(Math.pow(10, lo)) +
-      "</span><span>" + fmt(Math.pow(10, (lo + hi) / 2)) + "</span><span>" + fmt(Math.pow(10, hi)) + "+</span><span>ND</span></div>";
+      "<div style='margin-top:4px'>Bar color: " + label + " average, ng/L (continuous)</div>" +
+      "<div style='display:flex;gap:6px;align-items:center;margin:3px 0 1px'>" +
+      "<div style='flex:1;height:10px;border-radius:2px;background:linear-gradient(to right," +
+      stops.map(function (f) { return barColor(f, 1); }).join(",") + ")'></div>" +
+      "<div style='width:22px;height:10px;border-radius:2px;background:" + ND_COLOR + "'></div></div>" +
+      "<div style='display:flex;gap:6px'><div class='ticks' style='flex:1'><span>" + fmt(Math.pow(10, lo)) +
+      "</span><span>" + fmt(Math.pow(10, (lo + hi) / 2)) + "</span><span>" + fmt(Math.pow(10, hi)) +
+      "+</span></div><div style='width:22px;font-size:10px;text-align:center'>ND</div></div>";
   }
 
   // Shared by the river-sample click and the coast-bar click. A selection filters the upstream-stream layer to the

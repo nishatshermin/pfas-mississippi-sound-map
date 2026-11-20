@@ -89,7 +89,20 @@ require([
   const tableMeasure = document.getElementById("table-measure");
   MEASURES.forEach(function (m) { const o = document.createElement("option"); o.value = m[0]; o.textContent = m[1];
                                   tableMeasure.appendChild(o); });
-  let tableRows = [], sortKey = "stream", sortDir = -1;          // longest streams first
+  // The table does not follow the map: its rows are fixed 25 km stretches along the whole coast (the grouping the
+  // map uses at its starting view), built once from the river samples.
+  const TABLE_BIN_KM = 25;
+  let tableRows = null, sortKey = "stream", sortDir = -1;          // longest streams first
+  function buildTableRows() {
+    const groups = new Map();
+    mouthSamples.forEach(function (s) {
+      const i = Math.floor(s.km / TABLE_BIN_KM);
+      let g = groups.get(i);
+      if (!g) { g = { stream: 0, mouths: new Set(), n: 0, sids: [], samples: [] }; groups.set(i, g); }
+      g.stream += s.stream; g.mouths.add(s.mouth); g.n += 1; g.sids.push(s.sid); g.samples.push(s);
+    });
+    return Array.from(groups.values()).filter(function (g) { return g.stream > 0; }).map(function (g) { return { gr: g }; });
+  }
   tableMeasure.addEventListener("change", function () { renderTable(); });
   barTable.querySelectorAll("th .sort").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -107,7 +120,8 @@ require([
     if (!coastOn) { barTable.hidden = true; return; }
     barTable.hidden = false;
     const m = tableMeasure.value.toLowerCase();
-    const rows = tableRows.map(function (r) { return { gr: r.gr, stream: r.gr.stream, avg: averageOf(r.gr.samples, m) }; });
+    if (!tableRows && mouthSamples.length) tableRows = buildTableRows();
+    const rows = (tableRows || []).map(function (r) { return { gr: r.gr, stream: r.gr.stream, avg: averageOf(r.gr.samples, m) }; });
     rows.sort(function (p, q) {
       const u = p[sortKey], v = q[sortKey];
       if (u === null && v === null) return 0;
@@ -118,7 +132,7 @@ require([
     const arrow = function (k) { return sortKey === k ? (sortDir > 0 ? " \u25B2" : " \u25BC") : ""; };
     barTable.querySelector('[data-k="stream"]').textContent = "Stream length (km)" + arrow("stream");
     barTable.querySelector('[data-k="avg"]').textContent = "Average (ng/L)" + arrow("avg");
-    document.getElementById("bar-table-title").textContent = "Coast bars on screen (" + rows.length + ")";
+    document.getElementById("bar-table-title").textContent = "Coast bars, " + TABLE_BIN_KM + " km stretches (" + rows.length + ")";
     tbody.innerHTML = "";
     rows.forEach(function (r) {
       const tr = document.createElement("tr");
@@ -486,8 +500,7 @@ require([
     // overlap at a small scale. Bars are placed longest stream first; a bar that would overlap one already placed is
     // hidden at this zoom (a small dot marks its spot) and comes back once zooming in gives it room.
     bars.sort(function (u, v) { return v.gr.stream - u.gr.stream; });
-    tableRows = bars.map(function (b) { return { gr: b.gr }; });
-    renderTable();
+    renderTable();                 // refreshes only the row highlight; the rows themselves stay fixed
     const placed = [], labelled = [];
     let hidden = 0;
     bars.forEach(function (bar) {

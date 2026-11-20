@@ -64,6 +64,24 @@
   #legend-panel .esri-legend { background: transparent; padding: 0 2px 6px; font-size: 11.5px; }
   #legend-panel .esri-legend__service { padding: 4px 8px; }
   @media (max-width: 700px) { #legend-panel { width: 180px; max-height: 34%; } }
+  #bar-table { position: absolute; left: 12px; bottom: 40px; width: 270px; max-height: 38%; display: flex;
+    flex-direction: column; background: var(--paper); border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25);
+    font-size: 12px; z-index: 3; }
+  #bar-table[hidden] { display: none; }
+  #bar-table .hd { padding: 7px 10px 4px; font-weight: 600; font-size: 12.5px; }
+  #bar-table .scroll { overflow: auto; padding: 0 6px 6px; }
+  #bar-table table { width: 100%; border-collapse: collapse; }
+  #bar-table th { position: sticky; top: 0; background: var(--paper); text-align: right; padding: 4px 4px;
+    border-bottom: 1px solid #d9dde1; font-weight: 600; vertical-align: bottom; }
+  #bar-table th .sort { font: inherit; font-weight: 600; background: none; border: 0; padding: 0; cursor: pointer;
+    color: var(--ink); text-align: right; }
+  #bar-table th select { font: inherit; font-size: 11.5px; max-width: 118px; margin-bottom: 2px; }
+  #bar-table td { text-align: right; padding: 3px 4px; border-bottom: 1px solid #f0f2f4; font-variant-numeric: tabular-nums; }
+  #bar-table tbody tr { cursor: pointer; }
+  #bar-table tbody tr:hover { background: #eef3f8; }
+  #bar-table tbody tr.sel { background: #dde7f2; }
+  #bar-table .nd { color: var(--muted); }
+  @media (max-width: 700px) { #bar-table { width: 200px; max-height: 30%; } }
   #tip { position: absolute; pointer-events: none; background: #fff; border: 1px solid #ccc;
     border-radius: 3px; padding: 3px 6px; font-size: 12px; display: none; z-index: 4; }
   @media (max-width: 520px) { #card { max-width: 190px; font-size: 11.5px; } }
@@ -92,6 +110,17 @@
   <p id="status"></p>
 </div>
 <div id="legend-panel" aria-label="Legend"><h2>Legend</h2><div id="legend"></div></div>
+<div id="bar-table" hidden aria-label="Table of the coast bars on screen">
+  <div class="hd" id="bar-table-title">Coast bars on screen</div>
+  <div class="scroll"><table>
+    <thead><tr>
+      <th><button class="sort" type="button" data-k="stream">Stream length (km)</button></th>
+      <th><select id="table-measure" aria-label="PFAS measure for the table"></select><br>
+          <button class="sort" type="button" data-k="avg">Average (ng/L)</button></th>
+    </tr></thead>
+    <tbody></tbody>
+  </table></div>
+</div>
 <div id="tip"></div>
 <div id="signin"><div class="box">
   <div>This view reads private PFAS samples. Sign in with your ArcGIS Online account to see them.</div>

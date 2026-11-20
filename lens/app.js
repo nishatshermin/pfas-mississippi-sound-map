@@ -83,12 +83,66 @@ require([
   MEASURES.forEach(function (m) { const o = document.createElement("option"); o.value = m[0]; o.textContent = m[1];
                                   measureSel.appendChild(o); });
   measureSel.addEventListener("change", function () { draw(); });
+  // Table of the bars on screen (bottom left): stream length and the average of a PFAS measure chosen in the table,
+  // sortable both ways by clicking a column header; clicking a row shows that bar's streams and samples.
+  const barTable = document.getElementById("bar-table"), tbody = barTable.querySelector("tbody");
+  const tableMeasure = document.getElementById("table-measure");
+  MEASURES.forEach(function (m) { const o = document.createElement("option"); o.value = m[0]; o.textContent = m[1];
+                                  tableMeasure.appendChild(o); });
+  let tableRows = [], sortKey = "stream", sortDir = -1;          // longest streams first
+  tableMeasure.addEventListener("change", function () { renderTable(); });
+  barTable.querySelectorAll("th .sort").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const k = btn.getAttribute("data-k");
+      if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = -1; }
+      renderTable();
+    });
+  });
+  function averageOf(samples, m) {
+    let s = 0, n = 0;
+    samples.forEach(function (x) { const v = x.a[m]; if (v !== null && v !== undefined && !isNaN(v)) { s += +v; n += 1; } });
+    return n ? s / n : null;
+  }
+  function renderTable() {
+    if (!coastOn) { barTable.hidden = true; return; }
+    barTable.hidden = false;
+    const m = tableMeasure.value.toLowerCase();
+    const rows = tableRows.map(function (r) { return { gr: r.gr, stream: r.gr.stream, avg: averageOf(r.gr.samples, m) }; });
+    rows.sort(function (p, q) {
+      const u = p[sortKey], v = q[sortKey];
+      if (u === null && v === null) return 0;
+      if (u === null) return 1;                                   // ND rows stay at the bottom either way
+      if (v === null) return -1;
+      return (u - v) * sortDir;
+    });
+    const arrow = function (k) { return sortKey === k ? (sortDir > 0 ? " \u25B2" : " \u25BC") : ""; };
+    barTable.querySelector('[data-k="stream"]').textContent = "Stream length (km)" + arrow("stream");
+    barTable.querySelector('[data-k="avg"]').textContent = "Average (ng/L)" + arrow("avg");
+    document.getElementById("bar-table-title").textContent = "Coast bars on screen (" + rows.length + ")";
+    tbody.innerHTML = "";
+    rows.forEach(function (r) {
+      const tr = document.createElement("tr");
+      if (selected && r.gr.sids.some(function (s) { return selected.has(s); })) tr.className = "sel";
+      const td1 = document.createElement("td"); td1.textContent = Math.round(r.stream).toLocaleString();
+      const td2 = document.createElement("td");
+      if (r.avg === null) { td2.textContent = "ND"; td2.className = "nd"; } else td2.textContent = fmt(r.avg);
+      tr.appendChild(td1); tr.appendChild(td2);
+      tr.title = r.gr.n + (r.gr.n === 1 ? " river sample, " : " river samples, ") + r.gr.mouths.size +
+        (r.gr.mouths.size === 1 ? " river mouth" : " river mouths") + ". Click to show its streams and samples.";
+      tr.addEventListener("click", function () {
+        selectSamples(r.gr.sids.slice(), "Showing the " + r.gr.n + (r.gr.n === 1 ? " river sample" : " river samples") +
+          " of this bar and every stream upstream of them.");
+      });
+      tbody.appendChild(tr);
+    });
+  }
   const coastToggle = document.getElementById("coast-toggle");
   coastToggle.addEventListener("click", function () {
     coastOn = !coastOn;
     coastToggle.setAttribute("aria-pressed", String(coastOn));
     coastToggle.textContent = coastOn ? "Hide coast bars" : "Show coast bars";
     document.getElementById("coast-key").style.display = coastOn ? "block" : "none";
+    if (!coastOn) renderTable();
     draw();
   });
   const toggle = document.getElementById("lens-toggle");
@@ -339,8 +393,8 @@ require([
     mouthSamples.forEach(function (s) {
       const i = Math.floor(s.km / bin);
       let g = groups.get(i);
-      if (!g) { g = { stream: 0, mouths: new Set(), n: 0, nv: 0, sum: 0, sids: [] }; groups.set(i, g); }
-      g.stream += s.stream; g.mouths.add(s.mouth); g.n += 1; g.sids.push(s.sid);
+      if (!g) { g = { stream: 0, mouths: new Set(), n: 0, nv: 0, sum: 0, sids: [], samples: [] }; groups.set(i, g); }
+      g.stream += s.stream; g.mouths.add(s.mouth); g.n += 1; g.sids.push(s.sid); g.samples.push(s);
       const v = s.a[m];
       if (v !== null && v !== undefined && !isNaN(v)) { g.nv += 1; g.sum += +v; }
     });
@@ -432,6 +486,8 @@ require([
     // overlap at a small scale. Bars are placed longest stream first; a bar that would overlap one already placed is
     // hidden at this zoom (a small dot marks its spot) and comes back once zooming in gives it room.
     bars.sort(function (u, v) { return v.gr.stream - u.gr.stream; });
+    tableRows = bars.map(function (b) { return { gr: b.gr }; });
+    renderTable();
     const placed = [], labelled = [];
     let hidden = 0;
     bars.forEach(function (bar) {

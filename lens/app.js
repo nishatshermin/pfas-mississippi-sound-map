@@ -554,11 +554,12 @@ require([
     });
     // key in the card
     const stops = [0, 1 / 3, 2 / 3, 1];
-    document.getElementById("coast-key").innerHTML =
+    document.getElementById("info-bars").textContent =
       "Bar length: upstream stream length (log scale; dashed lines at 10, 100, 1,000 km and so on). Stretch size now " + bin + " km." +
       (hidden ? " " + hidden + (hidden === 1 ? " bar is" : " bars are") + " hidden to avoid overlap (white dots); zoom in to see " +
-                (hidden === 1 ? "it." : "them.") : "") +
-      "<div style='margin-top:4px'>Bar color: " + label + " average, ng/L (continuous)</div>" +
+                (hidden === 1 ? "it." : "them.") : "");
+    document.getElementById("coast-key").innerHTML =
+      "<div>Bar color: " + label + " average, ng/L (continuous)</div>" +
       "<div style='display:flex;gap:6px;align-items:center;margin:3px 0 1px'>" +
       "<div style='flex:1;height:10px;border-radius:2px;background:linear-gradient(to right," +
       stops.map(function (f) { return barColor(f, 1); }).join(",") + ")'></div>" +

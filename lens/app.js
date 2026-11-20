@@ -593,18 +593,27 @@ require([
               sidRiver: field(river, "SampleID") || "SampleID", netUp: field(up, "net_id") || "net_id",
               sidWb: field(wb, "SampleID") || "SampleID", wbStart: wb.definitionExpression || null };
     river.outFields = [trace.netRiver, trace.sidRiver];
+    points.forEach(function (p) { p.layer.outFields = ["*"]; });
     up.definitionExpression = NOTHING;
+    // The "Upstream tracing (river samples)" group starts turned off; a trace or a bar/table selection turns it on
+    // for as long as the selection lasts.
+    const group = river.parent && river.parent.type === "group" ? river.parent : null;
+    if (group) group.visible = false;
+    trace.group = group;
+    trace.groupWas = null;
     view.on("click", function (event) {
       view.hitTest(event).then(function (res) {
         const hits = res.results.filter(function (r) { return r.graphic && r.graphic.layer; });
-        const hit = hits.find(function (r) { return r.graphic.layer === river; });
+        // a click on any sample point (river-sample rings or the water-body samples) traces it, if it is a traced
+        // river/stream sample
+        const hit = hits.find(function (r) {
+          const p = points.find(function (q) { return q.layer === r.graphic.layer; });
+          return p && r.graphic.attributes && r.graphic.attributes[p.sid];
+        });
         if (hit) {
-          // one river sample: its upstream streams, and only that sample in the water-body layer (as before)
-          clearSelection(false);
-          const a = hit.graphic.attributes;
-          up.definitionExpression = a[trace.netRiver] ? trace.netUp + " = " + quote(a[trace.netRiver]) : NOTHING;
-          up.visible = true;
-          wb.definitionExpression = trace.sidWb + " = " + quote(a[trace.sidRiver]);
+          const p = points.find(function (q) { return q.layer === hit.graphic.layer; });
+          const sid = hit.graphic.attributes[p.sid];
+          selectSamples([sid], "Showing river sample " + sid + " and every stream that could drain to it.", false, true);
         } else if (!hits.length) {
           clearSelection(true);
         }
@@ -616,6 +625,7 @@ require([
     if (!trace) return;
     trace.up.definitionExpression = NOTHING;
     trace.up.visible = false;
+    if (trace.group && trace.groupWas !== null) { trace.group.visible = trace.groupWas; trace.groupWas = null; }
     trace.points.forEach(function (p) { p.layer.definitionExpression = p.start; });
     trace.wb.definitionExpression = trace.wbStart;
     if (selected) setStatus("Selection cleared.");
@@ -623,23 +633,28 @@ require([
     if (redraw) draw();
   }
 
-  async function selectSamples(sids, message) {
+  // zoom: zoom to the streams afterwards (bar and table selections); riverOnly: do nothing for samples that are not
+  // traced river/stream samples (a click on a lake or estuary sample just shows its pop-up)
+  async function selectSamples(sids, message, zoom, riverOnly) {
     if (!trace || !sids.length) return;
-    clearSelection(false);
     const list = sids.map(quote).join(",");
     try {
       const q = trace.river.createQuery();
       q.where = trace.sidRiver + " IN (" + list + ")"; q.outFields = [trace.netRiver]; q.returnGeometry = false;
       const res = await trace.river.queryFeatures(q);
+      if (riverOnly && !res.features.length) return;
+      clearSelection(false);
       const nets = Array.from(new Set(res.features.map(function (f) { return f.attributes[trace.netRiver]; })
         .filter(function (v) { return v !== null && v !== undefined && v !== ""; })));
       trace.up.definitionExpression = nets.length ? trace.netUp + " IN (" + nets.map(quote).join(",") + ")" : NOTHING;
+      if (trace.group) { trace.groupWas = trace.group.visible; trace.group.visible = true; }
       trace.up.visible = true;
       trace.points.forEach(function (p) { p.layer.definitionExpression = p.sid + " IN (" + list + ")"; });
       selected = new Set(sids);
       setStatus(message + " " + nets.length + (nets.length === 1 ? " river network." : " river networks.") +
                 " Click an empty spot on the map to clear.");
       draw();
+      if (zoom === false) return;
       // zoom to the streams (or, without streams, to the samples)
       const ext = nets.length ? (await trace.up.queryExtent()).extent
                               : (await trace.river.queryExtent({ where: trace.sidRiver + " IN (" + list + ")" })).extent;

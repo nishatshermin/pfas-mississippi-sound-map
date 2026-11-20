@@ -27,7 +27,14 @@
   #lens .hit { pointer-events: auto; cursor: pointer; }
   #card { position: absolute; top: 12px; left: 12px; max-width: 270px; background: var(--paper);
     border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); padding: 10px 12px; font-size: 12.5px; line-height: 1.35; }
-  #card h1 { font-size: 15px; margin: 0 0 4px; }
+  #card h1 { font-size: 15px; margin: 0 0 4px; padding-right: 26px; }
+  #info-btn { position: absolute; top: 9px; right: 10px; width: 20px; height: 20px; border-radius: 50%;
+    border: 1.5px solid #23395B; background: #fff; color: #23395B; font: italic 700 12px Georgia, serif;
+    line-height: 16px; text-align: center; cursor: pointer; padding: 0; }
+  #info-btn[aria-expanded="true"] { background: #23395B; color: #fff; }
+  #info { display: none; margin: 4px 0 6px; padding: 6px 8px; background: #f4f6f8; border-radius: 4px; }
+  #info.open { display: block; }
+  #info p { margin: 3px 0; }
   #card p { margin: 4px 0; color: var(--muted); }
   #card .count { color: var(--ink); font-weight: 600; }
   #lens-toggle { margin-top: 6px; font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 4px;
@@ -67,10 +74,14 @@
 <svg id="lens" aria-label="Lens with charts of the samples inside it"></svg>
 <div id="card">
   <h1>PFAS samples: lens view</h1>
+  <button id="info-btn" type="button" aria-expanded="false" aria-controls="info" title="How to use this map"
+          onclick="var o=document.getElementById('info').classList.toggle('open');this.setAttribute('aria-expanded',o);">i</button>
   <p class="count" id="count">Loading samples…</p>
-  <p>Click a river/stream sample to show every stream that could drain to it; click an empty spot to clear.</p>
-  <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
-  <p>Coast bars: the river samples whose rivers reach the sea along each stretch of coast. Length = upstream stream length; color = average of the chosen PFAS measure. Zoom in for finer stretches; click a bar to show its streams and samples.</p>
+  <div id="info" role="note">
+    <p>Click a river/stream sample to show every stream that could drain to it; click an empty spot to clear.</p>
+    <p>Turn the lens on, then drag or zoom the map to move samples under it. Click a flag below the lens to open or close its chart.</p>
+    <p>Coast bars: the river samples whose rivers reach the sea along each stretch of coast. Length = upstream stream length; color = average of the chosen PFAS measure. Zoom in for finer stretches; click a bar to show its streams and samples.</p>
+  </div>
   <button id="lens-toggle" type="button" aria-pressed="false">Turn lens on</button>
   <div id="coast-controls">
     <button id="coast-toggle" type="button" aria-pressed="false">Show coast bars</button>

@@ -517,17 +517,8 @@ require([
         " km of upstream streams");
       labelled.push({ bar: bar, fill: bar.has ? barColor(norm(bar.avg), 1) : ND_COLOR });
     });
-    // Labels, drawn after all bars so no bar covers them: upstream stream length just past the top of each bar, and
-    // the PFAS average inside the bar along its length. A label that does not fit, or would collide with one
-    // already drawn, is left out at this zoom (zoom in for more).
-    const boxes = [];
-    const fits = function (bx) {
-      if (boxes.some(function (o) { return bx.x0 < o.x1 && bx.x1 > o.x0 && bx.y0 < o.y1 && bx.y1 > o.y0; })) return false;
-      boxes.push(bx); return true;
-    };
-    // stream-length labels only on the 10 bars with the longest upstream streams on screen
-    const top10 = new Set(labelled.slice().sort(function (u, v) { return v.bar.gr.stream - u.bar.gr.stream; })
-      .slice(0, 10).map(function (it) { return it.bar; }));
+    // Labels, drawn after all bars so no bar covers them: the PFAS average inside each bar along its length. A label
+    // that does not fit the bar is left out at this zoom (zoom in for more). Stream lengths are in the hover and the table.
     labelled.forEach(function (it) {
       const qd = it.bar.quad, A = qd[0], C = qd[1], T = qd[3];
       const L = Math.hypot(T[0] - A[0], T[1] - A[1]), W = Math.hypot(C[0] - A[0], C[1] - A[1]);
@@ -547,16 +538,6 @@ require([
                                 transform: "rotate(" + ang.toFixed(1) + " " + cx.toFixed(1) + " " + cy.toFixed(1) + ")" }, g);
         tx.textContent = inside;
       }
-      // top: upstream stream length with its unit, just past the bar's end (top 10 bars only)
-      if (!top10.has(it.bar)) return;
-      const top = kmLabel(it.bar.gr.stream), tw = top.length * 6.2, th = 12;
-      const px = (T[0] + qd[2][0]) / 2 + ux * 5, py = (T[1] + qd[2][1]) / 2 + uy * 5;
-      const ax = ux > 0.35 ? 0 : ux < -0.35 ? -tw : -tw / 2, ay = uy > 0.35 ? 0 : uy < -0.35 ? -th : -th / 2;
-      if (!fits({ x0: px + ax, x1: px + ax + tw, y0: py + ay, y1: py + ay + th })) return;
-      const tt = el("text", { x: px + ax, y: py + ay + th / 2, "font-size": 10.5, fill: "#1f2933", "font-weight": 600,
-                              "dominant-baseline": "central", "paint-order": "stroke", stroke: "rgba(255,255,255,0.9)",
-                              "stroke-width": 3 }, g);
-      tt.textContent = top;
     });
     // key in the card
     const stops = [0, 1 / 3, 2 / 3, 1];

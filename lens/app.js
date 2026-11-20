@@ -554,7 +554,9 @@ require([
     });
     // key in the card
     const stops = [0, 1 / 3, 2 / 3, 1];
-    document.getElementById("info-bars").textContent =
+    // (guarded: a browser can hold a cached copy of the page without this element for a few minutes after an update)
+    const infoBars = document.getElementById("info-bars");
+    if (infoBars) infoBars.textContent =
       "Bar length: upstream stream length (log scale; dashed lines at 10, 100, 1,000 km and so on). Stretch size now " + bin + " km." +
       (hidden ? " " + hidden + (hidden === 1 ? " bar is" : " bars are") + " hidden to avoid overlap (white dots); zoom in to see " +
                 (hidden === 1 ? "it." : "them.") : "");
